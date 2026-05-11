@@ -305,7 +305,8 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type SendChatMessageRequest struct {
-	Content string `json:"content"`
+	Content       string   `json:"content"`
+	AttachmentIDs []string `json:"attachment_ids"`
 }
 
 type SendChatMessageResponse struct {
@@ -337,6 +338,14 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-validate attachment ids early so invalid input returns 400 before
+	// any state mutation. The actual link runs after CreateChatMessage so we
+	// have a message_id to back-fill into the attachment rows.
+	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
+	if !ok {
+		return
+	}
+
 	// Load chat session and re-check the private-agent gate on every send.
 	// The session's creator passed the gate at create time, but their
 	// workspace role (or the agent's owner) may have changed since — keep
@@ -364,6 +373,22 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create chat message")
 		return
+	}
+
+	// Back-fill chat_message_id on attachments that were uploaded against
+	// this session while the user was composing. The query only touches rows
+	// where chat_session_id matches AND chat_message_id IS NULL, so it cannot
+	// rebind an attachment that already belongs to an earlier message.
+	if len(attachmentIDs) > 0 {
+		if err := h.Queries.LinkAttachmentsToChatMessage(r.Context(), db.LinkAttachmentsToChatMessageParams{
+			ChatMessageID: msg.ID,
+			ChatSessionID: session.ID,
+			Column3:       attachmentIDs,
+		}); err != nil {
+			// Don't fail the send — the message content is already saved and
+			// the attachments remain on the session (still downloadable).
+			slog.Warn("link chat attachments failed", "error", err, "message_id", uuidToString(msg.ID))
+		}
 	}
 
 	// Enqueue a chat task after the message exists.
