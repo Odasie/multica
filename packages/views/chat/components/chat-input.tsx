@@ -62,14 +62,30 @@ export function ChatInput({
   const editorRef = useRef<ContentEditorRef>(null);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
-  // Scope the new-chat draft by agent:
-  //   1. Switching agents while composing a brand-new chat gives each
-  //      agent its own draft (no cross-agent leakage).
-  //   2. Tiptap's Placeholder extension is only applied at mount; this
-  //      key changes on agent switch so the editor remounts and the
-  //      `Tell {agent} what to do…` placeholder refreshes.
+  // Two keys with deliberately different concerns:
+  //
+  // `draftKey` — zustand storage key. Scopes the in-progress draft per
+  // session so different sessions don't bleed text into each other; for
+  // brand-new chats it falls back to a per-agent slot so switching agents
+  // mid-compose gives each agent its own draft. This is a STORAGE key, not
+  // a React identity.
+  //
+  // `editorKey` — React `key` on the ContentEditor. Used ONLY to force a
+  // remount when the user explicitly switches agent (so Tiptap's
+  // Placeholder, which only reads on mount, refreshes to "Tell {agent}…").
+  // Crucially this does NOT include `activeSessionId`: when the user
+  // uploads a file in a brand-new chat, `handleUploadFile` first awaits
+  // `ensureSession` which lazily creates the session and flips
+  // `activeSessionId` from null → uuid mid-upload. If the editor key
+  // depended on session id, that flip would unmount the editor right as
+  // the blob preview was inserted, dropping the in-progress upload's
+  // image node before file-upload.ts could swap it for the CDN URL — the
+  // user would see the image flash on then disappear. Keeping editor
+  // identity stable across the lazy-create event is what makes
+  // first-upload-creates-session work the same as second-upload.
   const draftKey =
     activeSessionId ?? `${DRAFT_NEW_SESSION}:${selectedAgentId ?? ""}`;
+  const editorKey = selectedAgentId ?? "no-agent";
   // Select a primitive — empty-string fallback keeps referential stability.
   const inputDraft = useChatStore((s) => s.inputDrafts[draftKey] ?? "");
   const setInputDraft = useChatStore((s) => s.setInputDraft);
@@ -201,9 +217,9 @@ export function ChatInput({
         {topSlot}
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
           <ContentEditor
-            // Remount the editor when the active session changes so its
-            // uncontrolled defaultValue picks up the new session's draft.
-            key={draftKey}
+            // See the editorKey / draftKey split note above — editorKey
+            // intentionally does not depend on activeSessionId.
+            key={editorKey}
             ref={editorRef}
             defaultValue={inputDraft}
             placeholder={placeholder}
