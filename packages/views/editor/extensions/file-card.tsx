@@ -17,7 +17,7 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
-import { FileText, Loader2, Download } from "lucide-react";
+import { FileText, Loader2, Download, Trash2 } from "lucide-react";
 import { useT } from "../../i18n";
 import { useAttachmentDownloadResolver } from "../attachment-download-context";
 
@@ -30,12 +30,13 @@ import { useAttachmentDownloadResolver } from "../attachment-download-context";
 // React NodeView
 // ---------------------------------------------------------------------------
 
-function FileCardView({ node }: NodeViewProps) {
+function FileCardView({ node, editor, deleteNode }: NodeViewProps) {
   const { t } = useT("editor");
   const href = (node.attrs.href as string) || "";
   const filename = (node.attrs.filename as string) || "";
   const uploading = node.attrs.uploading as boolean;
   const { openByUrl } = useAttachmentDownloadResolver();
+  const isEditable = editor.isEditable;
 
   const openFile = () => {
     openByUrl(href);
@@ -67,6 +68,21 @@ function FileCardView({ node }: NodeViewProps) {
             }}
           >
             <Download className="size-3.5" />
+          </button>
+        )}
+        {isEditable && (
+          <button
+            type="button"
+            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title={t(($) => $.file_card.delete)}
+            aria-label={t(($) => $.file_card.delete)}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              deleteNode();
+            }}
+          >
+            <Trash2 className="size-3.5" />
           </button>
         )}
       </div>

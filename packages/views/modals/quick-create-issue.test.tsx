@@ -78,8 +78,11 @@ vi.mock("@multica/core/projects/queries", () => ({
 }));
 
 vi.mock("@multica/core/issues/stores/quick-create-store", () => ({
-  useQuickCreateStore: (selector?: (state: typeof mockQuickCreateStore) => unknown) =>
-    (selector ? selector(mockQuickCreateStore) : mockQuickCreateStore),
+  useQuickCreateStore: Object.assign(
+    (selector?: (state: typeof mockQuickCreateStore) => unknown) =>
+      (selector ? selector(mockQuickCreateStore) : mockQuickCreateStore),
+    { getState: () => mockQuickCreateStore },
+  ),
 }));
 
 vi.mock("@multica/core/issues/stores/create-mode-store", () => ({

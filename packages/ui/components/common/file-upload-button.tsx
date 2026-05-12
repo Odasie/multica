@@ -5,11 +5,16 @@ import { Paperclip } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 
 interface FileUploadButtonProps {
-  /** Called with the selected File — caller handles upload. */
+  /** Called once per selected file — caller handles upload. The native
+   *  picker now allows multi-select by default, so this fires N times for
+   *  N files in a single open. Callers don't need to change anything to
+   *  opt in. Set `multiple={false}` to restore single-file behavior. */
   onSelect: (file: File) => void;
   disabled?: boolean;
   className?: string;
   size?: "sm" | "default";
+  /** Allow multi-select in the native picker. Default true. */
+  multiple?: boolean;
 }
 
 function FileUploadButton({
@@ -17,14 +22,16 @@ function FileUploadButton({
   disabled,
   className,
   size = "default",
+  multiple = true,
 }: FileUploadButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const list = Array.from(files);
     e.target.value = "";
-    onSelect(file);
+    for (const file of list) onSelect(file);
   };
 
   const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
@@ -49,6 +56,7 @@ function FileUploadButton({
       <input
         ref={inputRef}
         type="file"
+        multiple={multiple}
         className="hidden"
         onChange={handleChange}
       />

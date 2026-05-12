@@ -36,13 +36,9 @@ import { ProjectPicker } from "../projects/components/project-picker";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
 import { useAuthStore } from "@multica/core/auth";
 import { memberListOptions } from "@multica/core/workspace/queries";
-import {
-  ContentEditor,
-  type ContentEditorRef,
-  useFileDropZone,
-  FileDropOverlay,
-} from "../editor";
+import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay } from "../editor";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
+import { stripAttachmentMarkdown } from "./create-issue";
 import { useT } from "../i18n";
 
 // AgentCreatePanel — agent-mode body of the create-issue dialog. Renders
@@ -210,6 +206,21 @@ export function AgentCreatePanel({
     return () => cancelAnimationFrame(id);
   }, []);
 
+  // On unmount without a successful submit, strip any uploaded attachments
+  // from the persisted prompt draft so the next "create issue" session
+  // starts with a clean attachment area while preserving any typed text.
+  const submittedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      if (submittedRef.current) return;
+      const current = useQuickCreateStore.getState().prompt ?? "";
+      const cleaned = stripAttachmentMarkdown(current);
+      if (cleaned !== current) {
+        useQuickCreateStore.getState().setPrompt(cleaned);
+      }
+    };
+  }, []);
+
   const submit = async () => {
     const md = editorRef.current?.getMarkdown()?.trim() ?? "";
     if (!md || !agentId || submitting || versionBlocked || uploading) return;
@@ -223,6 +234,7 @@ export function AgentCreatePanel({
       });
       setLastAgentId(agentId);
       setLastProjectId(projectId);
+      submittedRef.current = true;
       clearPrompt();
       setLastMode("agent");
       toast.success(t(($) => $.create_issue.agent.toast_sent), {
@@ -237,6 +249,8 @@ export function AgentCreatePanel({
         setJustSent(true);
         setTimeout(() => setJustSent(false), 1500);
         requestAnimationFrame(() => editorRef.current?.focus());
+        // Re-arm the unmount cleanup for the next round.
+        submittedRef.current = false;
       } else {
         onClose();
       }

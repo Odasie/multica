@@ -53,7 +53,8 @@
     "copy_code": "Copy code"
   },
   "file_card": {
-    "uploading": "Uploading {{filename}}"
+    "uploading": "Uploading {{filename}}",
+    "delete": "Remove attachment"
   },
   "title_editor": {
     "title_aria_label": "Title"

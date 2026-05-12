@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigation } from "../navigation";
 import {
@@ -48,6 +48,34 @@ import { FileUploadButton } from "@multica/ui/components/common/file-upload-butt
 import { PillButton } from "../common/pill-button";
 import { IssuePickerModal } from "./issue-picker-modal";
 import { useT } from "../i18n";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Strip embedded attachment markdown nodes (file-card + images) from a
+ *  draft body. Used when the user closes the create-issue modal without
+ *  submitting: the typed text is preserved as a draft, but uploaded
+ *  attachments do NOT carry over to the next "create issue" session.
+ *  This addresses the historical bug where attachment X uploaded into
+ *  Issue A's abandoned draft would still appear when opening Issue B
+ *  with no way to clear it. */
+export function stripAttachmentMarkdown(md: string): string {
+  if (!md) return md;
+  return md
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      // !file[name](url) — custom file-card syntax.
+      if (/^!file\[[^\]]*\]\(https?:\/\/[^)]+\)\s*$/.test(trimmed)) return false;
+      // ![alt](url) — image syntax. Lines that are nothing but an image.
+      if (/^!\[[^\]]*\]\(https?:\/\/[^)]+\)\s*$/.test(trimmed)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 // ---------------------------------------------------------------------------
 // ManualCreatePanel — manual-mode body of the create-issue dialog. Renders
@@ -145,6 +173,23 @@ export function ManualCreatePanel({
 
   const createIssueMutation = useCreateIssue();
   const updateIssueMutation = useUpdateIssue();
+
+  // Tracks whether the panel was unmounted via a successful submit. On a
+  // plain close (cancel / overlay click) we strip uploaded attachments out
+  // of the persisted draft so the next "create issue" session starts with
+  // a clean attachment area while preserving any typed title / body text.
+  const submittedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      if (submittedRef.current) return;
+      const current = useIssueDraftStore.getState().draft.description ?? "";
+      const cleaned = stripAttachmentMarkdown(current);
+      if (cleaned !== current) {
+        useIssueDraftStore.getState().setDraft({ description: cleaned });
+      }
+    };
+  }, []);
+
   const resetForNextIssue = () => {
     setTitle("");
     setStatus("todo");
@@ -165,6 +210,9 @@ export function ManualCreatePanel({
     });
     descEditorRef.current?.clearContent();
     setFormResetKey((key) => key + 1);
+    // Re-arm the unmount cleanup: if the user uploads in this fresh
+    // round and then closes without submitting, strip again.
+    submittedRef.current = false;
   };
 
   const handleSubmit = async () => {
@@ -211,6 +259,7 @@ export function ManualCreatePanel({
 
       setLastAssignee(assigneeType, assigneeId);
       setLastMode("manual");
+      submittedRef.current = true;
       clearDraft();
       const shouldShowBacklogHint =
         status === "backlog" && assigneeType === "agent" && assigneeId &&
