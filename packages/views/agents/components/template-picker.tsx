@@ -5,16 +5,17 @@ import {
   Brush,
   ChevronRight,
   FileText,
-  FlaskConical,
-  LayoutDashboard,
   ListChecks,
   Loader2,
-  Megaphone,
   Palette,
   PenLine,
   Presentation,
   Search,
+  ShieldCheck,
   Sparkles,
+  Swords,
+  Telescope,
+  Wand2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -167,14 +168,15 @@ const ICONS: Record<string, LucideIcon> = {
   Search,
   Palette,
   FileText,
-  FlaskConical,
   Sparkles,
   ListChecks,
   Brush,
   PenLine,
-  Megaphone,
   Presentation,
-  LayoutDashboard,
+  Telescope,
+  ShieldCheck,
+  Swords,
+  Wand2,
 };
 
 /** Semantic accent → Tailwind class string. The class strings are written
