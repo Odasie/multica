@@ -58,3 +58,6 @@ server/server
 data/
 .kilo
 .idea
+
+# git worktrees
+.worktrees/
