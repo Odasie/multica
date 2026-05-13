@@ -29,7 +29,7 @@ import {
   SquarePen,
   CircleUser,
   FolderKanban,
-  LayoutDashboard,
+  BarChart3,
   X,
   Zap,
   Users,
@@ -109,7 +109,7 @@ type NavKey =
   | "autopilots"
   | "agents"
   | "squads"
-  | "dashboard"
+  | "usage"
   | "runtimes"
   | "skills"
   | "settings";
@@ -123,7 +123,7 @@ type NavLabelKey =
   | "autopilots"
   | "agents"
   | "squads"
-  | "dashboard"
+  | "usage"
   | "runtimes"
   | "skills"
   | "settings";
@@ -139,7 +139,7 @@ const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[]
   { key: "autopilots", labelKey: "autopilots", icon: Zap },
   { key: "agents", labelKey: "agents", icon: Bot },
   { key: "squads", labelKey: "squads", icon: Users },
-  { key: "dashboard", labelKey: "dashboard", icon: LayoutDashboard },
+  { key: "usage", labelKey: "usage", icon: BarChart3 },
 ];
 
 const configureNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [

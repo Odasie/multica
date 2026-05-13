@@ -70,6 +70,7 @@ const (
 	EventChatDone           = "chat:done"
 	EventChatSessionRead    = "chat:session_read"
 	EventChatSessionDeleted = "chat:session_deleted"
+	EventChatSessionUpdated = "chat:session_updated"
 
 	// Project events
 	EventProjectCreated         = "project:created"
