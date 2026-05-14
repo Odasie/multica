@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -95,84 +96,73 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 
-	// Probe available agent CLIs
+	// Probe available agent CLIs. exec.LookPath is the primary path, but on
+	// macOS/Linux a GUI-launched daemon (Electron, Launchpad) does not
+	// inherit the user's interactive shell PATH — fnm/nvm/volta multishells,
+	// the Anthropic native installer prefix, and per-user npm prefixes all
+	// live in dirs that only get added to PATH by ~/.zshrc or ~/.bashrc.
+	// shellResolvedAgents asks the user's login shell, exactly once, to
+	// resolve every standard agent name to its canonical absolute path, so
+	// we can find binaries the bare daemon process can't see. See
+	// resolveAgentsViaLoginShell for the details and constraints.
+	shellResolved := resolveAgentsViaLoginShell(defaultAgentCommandNames)
+	probe := func(envVar, defaultCmd, modelEnv string) (AgentEntry, bool) {
+		cmd := envOrDefault(envVar, defaultCmd)
+		if _, err := exec.LookPath(cmd); err == nil {
+			return AgentEntry{
+				Path:  cmd,
+				Model: strings.TrimSpace(os.Getenv(modelEnv)),
+			}, true
+		}
+		// The shell fallback only rescues bare command names. An operator
+		// who pinned MULTICA_*_PATH to an absolute or relative path that
+		// doesn't exist should hard-miss, not silently get a different
+		// binary.
+		if strings.ContainsAny(cmd, "/\\") {
+			return AgentEntry{}, false
+		}
+		if path, ok := shellResolved[cmd]; ok {
+			return AgentEntry{
+				Path:  path,
+				Model: strings.TrimSpace(os.Getenv(modelEnv)),
+			}, true
+		}
+		return AgentEntry{}, false
+	}
+
 	agents := map[string]AgentEntry{}
-	claudePath := envOrDefault("MULTICA_CLAUDE_PATH", "claude")
-	if _, err := exec.LookPath(claudePath); err == nil {
-		agents["claude"] = AgentEntry{
-			Path:  claudePath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_CLAUDE_MODEL")),
-		}
+	if e, ok := probe("MULTICA_CLAUDE_PATH", "claude", "MULTICA_CLAUDE_MODEL"); ok {
+		agents["claude"] = e
 	}
-	codexPath := envOrDefault("MULTICA_CODEX_PATH", "codex")
-	if _, err := exec.LookPath(codexPath); err == nil {
-		agents["codex"] = AgentEntry{
-			Path:  codexPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_CODEX_MODEL")),
-		}
+	if e, ok := probe("MULTICA_CODEX_PATH", "codex", "MULTICA_CODEX_MODEL"); ok {
+		agents["codex"] = e
 	}
-	opencodePath := envOrDefault("MULTICA_OPENCODE_PATH", "opencode")
-	if _, err := exec.LookPath(opencodePath); err == nil {
-		agents["opencode"] = AgentEntry{
-			Path:  opencodePath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_OPENCODE_MODEL")),
-		}
+	if e, ok := probe("MULTICA_OPENCODE_PATH", "opencode", "MULTICA_OPENCODE_MODEL"); ok {
+		agents["opencode"] = e
 	}
-	openclawPath := envOrDefault("MULTICA_OPENCLAW_PATH", "openclaw")
-	if _, err := exec.LookPath(openclawPath); err == nil {
-		agents["openclaw"] = AgentEntry{
-			Path:  openclawPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_OPENCLAW_MODEL")),
-		}
+	if e, ok := probe("MULTICA_OPENCLAW_PATH", "openclaw", "MULTICA_OPENCLAW_MODEL"); ok {
+		agents["openclaw"] = e
 	}
-	hermesPath := envOrDefault("MULTICA_HERMES_PATH", "hermes")
-	if _, err := exec.LookPath(hermesPath); err == nil {
-		agents["hermes"] = AgentEntry{
-			Path:  hermesPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_HERMES_MODEL")),
-		}
+	if e, ok := probe("MULTICA_HERMES_PATH", "hermes", "MULTICA_HERMES_MODEL"); ok {
+		agents["hermes"] = e
 	}
-	geminiPath := envOrDefault("MULTICA_GEMINI_PATH", "gemini")
-	if _, err := exec.LookPath(geminiPath); err == nil {
-		agents["gemini"] = AgentEntry{
-			Path:  geminiPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_GEMINI_MODEL")),
-		}
+	if e, ok := probe("MULTICA_GEMINI_PATH", "gemini", "MULTICA_GEMINI_MODEL"); ok {
+		agents["gemini"] = e
 	}
-	piPath := envOrDefault("MULTICA_PI_PATH", "pi")
-	if _, err := exec.LookPath(piPath); err == nil {
-		agents["pi"] = AgentEntry{
-			Path:  piPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_PI_MODEL")),
-		}
+	if e, ok := probe("MULTICA_PI_PATH", "pi", "MULTICA_PI_MODEL"); ok {
+		agents["pi"] = e
 	}
-	cursorPath := envOrDefault("MULTICA_CURSOR_PATH", "cursor-agent")
-	if _, err := exec.LookPath(cursorPath); err == nil {
-		agents["cursor"] = AgentEntry{
-			Path:  cursorPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_CURSOR_MODEL")),
-		}
+	if e, ok := probe("MULTICA_CURSOR_PATH", "cursor-agent", "MULTICA_CURSOR_MODEL"); ok {
+		agents["cursor"] = e
 	}
-	copilotPath := envOrDefault("MULTICA_COPILOT_PATH", "copilot")
-	if _, err := exec.LookPath(copilotPath); err == nil {
-		agents["copilot"] = AgentEntry{
-			Path:  copilotPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_COPILOT_MODEL")),
-		}
+	if e, ok := probe("MULTICA_COPILOT_PATH", "copilot", "MULTICA_COPILOT_MODEL"); ok {
+		agents["copilot"] = e
 	}
-	kimiPath := envOrDefault("MULTICA_KIMI_PATH", "kimi")
-	if _, err := exec.LookPath(kimiPath); err == nil {
-		agents["kimi"] = AgentEntry{
-			Path:  kimiPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_KIMI_MODEL")),
-		}
+	if e, ok := probe("MULTICA_KIMI_PATH", "kimi", "MULTICA_KIMI_MODEL"); ok {
+		agents["kimi"] = e
 	}
-	kiroPath := envOrDefault("MULTICA_KIRO_PATH", "kiro-cli")
-	if _, err := exec.LookPath(kiroPath); err == nil {
-		agents["kiro"] = AgentEntry{
-			Path:  kiroPath,
-			Model: strings.TrimSpace(os.Getenv("MULTICA_KIRO_MODEL")),
-		}
+	if e, ok := probe("MULTICA_KIRO_PATH", "kiro-cli", "MULTICA_KIRO_MODEL"); ok {
+		agents["kiro"] = e
 	}
 	if len(agents) == 0 {
 		return Config{}, fmt.Errorf("no agent CLI found: install claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor-agent, kimi, or kiro-cli and ensure it is on PATH")
@@ -441,4 +431,171 @@ func shellArgsFromEnv(name string) ([]string, error) {
 		return nil, fmt.Errorf("invalid %s: %w", name, err)
 	}
 	return args, nil
+}
+
+// defaultAgentCommandNames lists the command names the agent probe loop tries
+// before any MULTICA_*_PATH override is applied. Kept in sync with the
+// `probe(...)` calls in LoadConfig — the shell-fallback resolver uses this
+// list to pre-fetch canonical paths for every known agent in a single shell
+// invocation, instead of paying the cost-per-miss.
+var defaultAgentCommandNames = []string{
+	"claude", "codex", "opencode", "openclaw", "hermes",
+	"gemini", "pi", "cursor-agent", "copilot", "kimi", "kiro-cli",
+}
+
+// loginShellResolveTimeout caps how long the daemon will wait for the user's
+// login shell to print canonical agent paths. A broken rc file should not
+// block startup — if the shell takes longer than this, we proceed without
+// shell-resolved fallbacks and the daemon falls back to the same behaviour
+// it had before this code was added.
+const loginShellResolveTimeout = 3 * time.Second
+
+// supportedLoginShells limits which interpreters we will invoke via
+// `<shell> -ilc <script>`. Sticking to POSIX-compatible shells means the
+// resolver script below works unchanged. Notably absent: fish (uses
+// `command -s` and a different syntax for command substitution).
+var supportedLoginShells = map[string]struct{}{
+	"bash": {},
+	"zsh":  {},
+	"sh":   {},
+	"dash": {},
+	"ksh":  {},
+}
+
+// resolveAgentsViaLoginShell asks the user's login shell to print the canonical
+// (symlink-resolved) absolute path to each name in `names`. It returns a map
+// of name → path for whatever the shell could find, and an empty map if the
+// shell is unavailable / unsupported / times out / produces no usable output.
+//
+// Why we need this:
+//
+// Daemon-style processes on macOS/Linux do not inherit the user's interactive
+// PATH. `claude --version` working in Terminal.app is no guarantee that
+// exec.LookPath("claude") will work from a binary spawned by Launchpad, the
+// Electron app, or `launchctl`. The most common offenders are fnm/nvm/volta
+// "multishell" prefix dirs (per-shell, ephemeral) and the Anthropic native
+// installer (`~/.claude/local/`) — both leave their binaries on a path that
+// only `.zshrc` knows about.
+//
+// Implementation notes:
+//
+//   - We invoke `$SHELL -ilc <script>` with both -i (interactive) and -l
+//     (login) so we pick up PATH set in either ~/.zshrc / ~/.bashrc OR
+//     ~/.zprofile / ~/.bash_profile. Real users put it in both places.
+//   - The script resolves symlinks via `cd "$dirname" && pwd -P` while the
+//     spawned shell is still alive. fnm/nvm "multishell" directories vanish
+//     on shell exit, so the canonical path must be captured before stdout is
+//     returned to Go — by then the original path is already gone.
+//   - We only trust outputs that look like an absolute path AND still pass a
+//     fresh exec.LookPath check from the daemon's vantage point. That filters
+//     out aliases (`command -v` prints the alias definition for those, not a
+//     path) and per-shell paths the shell happened not to fully canonicalise.
+//   - Agent names are restricted to the bare set in defaultAgentCommandNames
+//     (`[A-Za-z0-9._-]` only); we inline them into the script unquoted to
+//     keep the script readable. Custom MULTICA_*_PATH values never reach this
+//     resolver — those go through exec.LookPath directly.
+func resolveAgentsViaLoginShell(names []string) map[string]string {
+	out := map[string]string{}
+	if len(names) == 0 {
+		return out
+	}
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		return out
+	}
+	if _, ok := supportedLoginShells[filepath.Base(shell)]; !ok {
+		return out
+	}
+
+	safe := make([]string, 0, len(names))
+	for _, n := range names {
+		if isSafeAgentName(n) {
+			safe = append(safe, n)
+		}
+	}
+	if len(safe) == 0 {
+		return out
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), loginShellResolveTimeout)
+	defer cancel()
+
+	raw, err := exec.CommandContext(ctx, shell, "-ilc", buildLoginShellResolveScript(safe)).Output()
+	if err != nil {
+		return out
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name, path := parts[0], strings.TrimSpace(parts[1])
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		// Final reality check: the path the shell gave us must still be
+		// executable from the daemon's perspective right now. fnm
+		// multishells are the motivating example — pwd -P inside the
+		// helper shell can fail to break out of the per-session bin dir,
+		// and we'd rather report "not found" than hand back a path that
+		// vanishes between detection and execution.
+		if _, err := exec.LookPath(path); err != nil {
+			continue
+		}
+		out[name] = path
+	}
+	return out
+}
+
+// buildLoginShellResolveScript returns the shell script that resolveAgentsViaLoginShell
+// runs inside `$SHELL -ilc`. The script:
+//
+//  1. iterates the provided command names,
+//  2. uses POSIX `command -v` to find each one on the interactive PATH,
+//  3. rejects results that are not absolute paths (which filters out aliases
+//     and shell functions — `command -v` prints their definition, not a path),
+//  4. canonicalises the directory via `cd ... && pwd -P` so symlinked prefix
+//     dirs (fnm/nvm/volta) collapse to stable paths,
+//  5. prints `<name>\t<canonical_path>` one entry per line for the caller.
+//
+// All input names are vetted by isSafeAgentName before they reach this
+// function, so inlining them unquoted into the for-loop word list is safe.
+func buildLoginShellResolveScript(names []string) string {
+	var b strings.Builder
+	b.WriteString("for n in")
+	for _, n := range names {
+		b.WriteByte(' ')
+		b.WriteString(n)
+	}
+	b.WriteString("; do\n")
+	b.WriteString("  p=$(command -v \"$n\" 2>/dev/null) || continue\n")
+	b.WriteString("  [ -n \"$p\" ] || continue\n")
+	b.WriteString("  case \"$p\" in /*) ;; *) continue ;; esac\n")
+	b.WriteString("  d=$(dirname \"$p\") && f=$(basename \"$p\") && c=$(cd \"$d\" 2>/dev/null && pwd -P) || continue\n")
+	b.WriteString("  printf '%s\\t%s\\n' \"$n\" \"$c/$f\"\n")
+	b.WriteString("done\n")
+	return b.String()
+}
+
+// isSafeAgentName checks that `s` is a bare command name composed only of
+// characters that are safe to inline into a shell script (ASCII letters,
+// digits, dot, dash, underscore). The agent names this daemon ships with all
+// satisfy the predicate; it exists to guard against future drift, not to
+// constrain operator-supplied paths (those never reach the shell resolver).
+func isSafeAgentName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
