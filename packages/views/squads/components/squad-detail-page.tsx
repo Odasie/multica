@@ -14,7 +14,7 @@ import { CreateAgentDialog } from "../../agents/components/create-agent-dialog";
 import { useNavigation } from "../../navigation";
 import { AppLink } from "../../navigation";
 import { PageHeader } from "../../layout/page-header";
-import { Users, Plus, Trash2, ArrowLeft, Crown, Camera, Loader2, Pencil, FileText, Save } from "lucide-react";
+import { Users, Plus, Trash2, ArrowLeft, ArrowUpRight, Crown, Camera, Loader2, Pencil, FileText, Save } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -23,6 +23,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@multica/ui/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@multica/ui/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -231,6 +236,7 @@ export function SquadDetailPage() {
           onCreateAgentClick={isWorkspaceAdmin ? () => setShowCreateAgent(true) : undefined}
           onSetLeader={(id) => setLeaderMut.mutate(id)}
           onRemoveMember={(m) => removeMemberMut.mutate(m)}
+          onViewAgent={(agentId) => push(p.agentDetail(agentId))}
           onUpdateRole={async (m, role) => { await updateRoleMut.mutateAsync({ member: m, role }); }}
           onSaveInstructions={async (next) => { await updateSquadMut.mutateAsync({ instructions: next }); toast.success("Instructions saved"); }}
           setLeaderPending={setLeaderMut.isPending}
@@ -910,6 +916,7 @@ function SquadOverviewPane({
   onSetLeader,
   onRemoveMember,
   onUpdateRole,
+  onViewAgent,
   onSaveInstructions,
   setLeaderPending,
 }: {
@@ -925,6 +932,7 @@ function SquadOverviewPane({
   onSetLeader: (agentId: string) => void;
   onRemoveMember: (m: SquadMember) => void;
   onUpdateRole: (m: SquadMember, role: string) => Promise<void>;
+  onViewAgent: (agentId: string) => void;
   onSaveInstructions: (next: string) => Promise<void>;
   setLeaderPending: boolean;
 }) {
@@ -979,6 +987,7 @@ function SquadOverviewPane({
               onSetLeader={onSetLeader}
               onRemoveMember={onRemoveMember}
               onUpdateRole={onUpdateRole}
+              onViewAgent={onViewAgent}
               setLeaderPending={setLeaderPending}
             />
           </div>
@@ -1026,6 +1035,7 @@ function SquadMembersTab({
   onSetLeader,
   onRemoveMember,
   onUpdateRole,
+  onViewAgent,
   setLeaderPending,
 }: {
   members: SquadMember[];
@@ -1037,6 +1047,7 @@ function SquadMembersTab({
   onSetLeader: (agentId: string) => void;
   onRemoveMember: (m: SquadMember) => void;
   onUpdateRole: (m: SquadMember, role: string) => Promise<void>;
+  onViewAgent: (agentId: string) => void;
   setLeaderPending: boolean;
 }) {
   const { t } = useT("squads");
@@ -1084,28 +1095,66 @@ function SquadMembersTab({
               />
             </div>
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {m.member_type === "agent" && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-foreground h-8 w-8 p-0"
+                        onClick={() => onViewAgent(m.member_id)}
+                        aria-label={t(($) => $.members_tab.view_agent_tooltip)}
+                      >
+                        <ArrowUpRight className="size-3.5" />
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>
+                    {t(($) => $.members_tab.view_agent_tooltip)}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               {m.member_type === "agent" && !isLeader(m) && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-amber-600 h-8 px-2"
-                  title="Make leader"
-                  onClick={() => onSetLeader(m.member_id)}
-                  disabled={setLeaderPending}
-                >
-                  <Crown className="size-3.5" />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-amber-600 h-8 w-8 p-0"
+                        onClick={() => onSetLeader(m.member_id)}
+                        disabled={setLeaderPending}
+                        aria-label={t(($) => $.members_tab.make_leader_tooltip)}
+                      >
+                        <Crown className="size-3.5" />
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>
+                    {t(($) => $.members_tab.make_leader_tooltip)}
+                  </TooltipContent>
+                </Tooltip>
               )}
               {!isLeader(m) && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-destructive h-8 w-8 p-0"
-                  title="Remove from squad"
-                  onClick={() => onRemoveMember(m)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-destructive h-8 w-8 p-0"
+                        onClick={() => onRemoveMember(m)}
+                        aria-label={t(($) => $.members_tab.remove_member_tooltip)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>
+                    {t(($) => $.members_tab.remove_member_tooltip)}
+                  </TooltipContent>
+                </Tooltip>
               )}
             </div>
           </div>
