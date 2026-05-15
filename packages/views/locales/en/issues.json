@@ -52,10 +52,13 @@
   },
   "display": {
     "tooltip": "Display settings",
+    "grouping_section": "Grouping",
     "ordering_section": "Ordering",
     "card_properties_section": "Card properties",
     "ascending_title": "Ascending",
     "descending_title": "Descending",
+    "group_status": "Status",
+    "group_assignee": "Assignee",
     "sort_manual": "Manual",
     "sort_priority": "Priority",
     "sort_due_date": "Due date",
@@ -107,7 +110,8 @@
     "hide_column": "Hide column",
     "show_column": "Show column",
     "add_issue_tooltip": "Add issue",
-    "empty_column": "No issues"
+    "empty_column": "No issues",
+    "empty_grouping": "No matching issues"
   },
   "detail": {
     "not_found": "This issue does not exist or has been deleted in this workspace.",

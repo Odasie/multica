@@ -54,6 +54,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { LabelChip } from "../../labels/label-chip";
 import {
   SORT_OPTIONS,
+  GROUPING_OPTIONS,
   CARD_PROPERTY_OPTIONS,
   type ActorFilterValue,
 } from "@multica/core/issues/stores/view-store";
@@ -549,6 +550,7 @@ export function IssueDisplayControls({ scopedIssues }: { scopedIssues: Issue[] }
   const labelFilters = useViewStore((s) => s.labelFilters);
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
+  const grouping = useViewStore((s) => s.grouping);
   const cardProperties = useViewStore((s) => s.cardProperties);
   const act = useViewStoreApi().getState();
 
@@ -573,6 +575,10 @@ export function IssueDisplayControls({ scopedIssues }: { scopedIssues: Issue[] }
     created_at: "sort_created",
     title: "sort_title",
   };
+  const GROUPING_LABEL_KEY: Record<typeof GROUPING_OPTIONS[number]["value"], "group_status" | "group_assignee"> = {
+    status: "group_status",
+    assignee: "group_assignee",
+  };
   const CARD_PROPERTY_LABEL_KEY: Record<typeof CARD_PROPERTY_OPTIONS[number]["key"], "card_priority" | "card_description" | "card_assignee" | "card_due_date" | "card_project" | "card_labels" | "card_child_progress"> = {
     priority: "card_priority",
     description: "card_description",
@@ -583,6 +589,7 @@ export function IssueDisplayControls({ scopedIssues }: { scopedIssues: Issue[] }
     childProgress: "card_child_progress",
   };
   const sortLabel = t(($) => $.display[SORT_LABEL_KEY[sortBy]]);
+  const groupingLabel = t(($) => $.display[GROUPING_LABEL_KEY[grouping]]);
 
   return (
     <div className="flex items-center gap-1">
@@ -795,6 +802,40 @@ export function IssueDisplayControls({ scopedIssues }: { scopedIssues: Issue[] }
             <TooltipContent side="bottom">{t(($) => $.display.tooltip)}</TooltipContent>
           </Tooltip>
           <PopoverContent align="end" className="w-64 p-0">
+            {viewMode === "board" && (
+              <div className="border-b px-3 py-2.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t(($) => $.display.grouping_section)}
+                </span>
+                <div className="mt-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-between text-xs"
+                        >
+                          {groupingLabel}
+                          <ChevronDown className="size-3 text-muted-foreground" />
+                        </Button>
+                      }
+                    />
+                    <DropdownMenuContent align="start" className="w-auto">
+                      {GROUPING_OPTIONS.map((opt) => (
+                        <DropdownMenuItem
+                          key={opt.value}
+                          onClick={() => act.setGrouping(opt.value)}
+                        >
+                          {t(($) => $.display[GROUPING_LABEL_KEY[opt.value]])}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            )}
+
             <div className="border-b px-3 py-2.5">
               <span className="text-xs font-medium text-muted-foreground">
                 {t(($) => $.display.ordering_section)}

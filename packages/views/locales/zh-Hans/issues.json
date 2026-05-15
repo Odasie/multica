@@ -51,10 +51,13 @@
   },
   "display": {
     "tooltip": "显示设置",
+    "grouping_section": "分组",
     "ordering_section": "排序",
     "card_properties_section": "卡片属性",
     "ascending_title": "升序",
     "descending_title": "降序",
+    "group_status": "状态",
+    "group_assignee": "负责人",
     "sort_manual": "手动",
     "sort_priority": "优先级",
     "sort_due_date": "截止日期",
@@ -106,7 +109,8 @@
     "hide_column": "隐藏列",
     "show_column": "显示列",
     "add_issue_tooltip": "新建 issue",
-    "empty_column": "无 issue"
+    "empty_column": "无 issue",
+    "empty_grouping": "没有匹配的 issue"
   },
   "detail": {
     "not_found": "这个 issue 不存在或已在该工作区被删除。",
