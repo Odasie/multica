@@ -60,6 +60,7 @@
   "role_editor": {
     "add_role": "+ Add role",
     "search_placeholder": "Type or pick a role…",
-    "no_suggestions": "No existing roles. Press Enter to add."
+    "no_suggestions": "No existing roles. Press Enter to add.",
+    "clear_role": "Clear role"
   }
 }

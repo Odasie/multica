@@ -704,10 +704,10 @@ export function RoleEditor({
 
   const commit = async (next: string) => {
     const trimmed = next.trim();
-    // Blank input is a no-op: clearing a role requires an explicit clear
-    // action, which doesn't exist yet. Without this guard, opening the editor
-    // on an existing role and pressing Enter on an empty input would commit
-    // "" and wipe the role.
+    // Blank input is a no-op: clearing a role goes through the explicit
+    // "Clear role" button below, never through blank Enter. Without this
+    // guard, opening the editor on an existing role and pressing Enter on
+    // an empty input would wipe the role accidentally.
     if (trimmed === "" || trimmed === value.trim()) {
       setOpen(false);
       setQuery("");
@@ -715,6 +715,16 @@ export function RoleEditor({
     }
     try {
       await onSave(trimmed);
+    } finally {
+      setOpen(false);
+      setQuery("");
+    }
+  };
+
+  const clearRole = async () => {
+    if (saving) return;
+    try {
+      await onSave("");
     } finally {
       setOpen(false);
       setQuery("");
@@ -777,6 +787,19 @@ export function RoleEditor({
               ))}
             </CommandGroup>
           </CommandList>
+          {value.trim() !== "" && (
+            <div className="border-t p-1">
+              <button
+                type="button"
+                onClick={() => void clearRole()}
+                disabled={saving}
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 className="size-3.5" />
+                {t(($) => $.role_editor.clear_role)}
+              </button>
+            </div>
+          )}
         </Command>
       </PopoverContent>
     </Popover>

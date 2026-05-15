@@ -229,6 +229,31 @@ describe("RoleEditor (combobox)", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("clears the role only through the explicit Clear button, not blank Enter", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<RoleEditor value="Reviewer" suggestions={[]} onSave={onSave} />);
+
+    // Trigger says "Reviewer" while value is non-empty.
+    await userEvent.click(screen.getByRole("button", { name: /reviewer/i }));
+
+    // Blank Enter must remain a no-op even though Clear is available.
+    await userEvent.type(screen.getByPlaceholderText(/type or pick/i), "{Enter}");
+    expect(onSave).not.toHaveBeenCalled();
+
+    // Reopen and use the explicit Clear button.
+    await userEvent.click(screen.getByRole("button", { name: /reviewer/i }));
+    await userEvent.click(screen.getByRole("button", { name: /clear role/i }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith("");
+  });
+
+  it("does not render the Clear button when value is empty", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<RoleEditor value="" suggestions={[]} onSave={onSave} />);
+    await userEvent.click(screen.getByRole("button", { name: /add role/i }));
+    expect(screen.queryByRole("button", { name: /clear role/i })).not.toBeInTheDocument();
+  });
+
   it("filters out the current value from suggestions", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(

@@ -60,6 +60,7 @@
   "role_editor": {
     "add_role": "+ 添加角色",
     "search_placeholder": "输入或选择角色…",
-    "no_suggestions": "尚无已用角色，按 Enter 添加"
+    "no_suggestions": "尚无已用角色，按 Enter 添加",
+    "clear_role": "清除角色"
   }
 }
