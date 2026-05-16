@@ -168,3 +168,90 @@ type DaemonHeartbeatPendingLocalSkillImport struct {
 	ID       string `json:"id"`
 	SkillKey string `json:"skill_key"`
 }
+
+// Terminal WS message types. These flow over the existing daemonws hub
+// between client (web/desktop/CLI) and daemon. Bytes payloads are base64
+// encoded so they can travel as JSON text frames without binary framing.
+const (
+	// TerminalOpen — client → daemon: request a new PTY session bound to a task workdir.
+	MessageTypeTerminalOpen = "terminal.open"
+	// TerminalOpened — daemon → client: ack carrying the session_id and resolved workdir.
+	MessageTypeTerminalOpened = "terminal.opened"
+	// TerminalData — bidirectional: PTY stdin (client→daemon) / stdout+stderr (daemon→client).
+	MessageTypeTerminalData = "terminal.data"
+	// TerminalResize — client → daemon: window-size change.
+	MessageTypeTerminalResize = "terminal.resize"
+	// TerminalClose — bidirectional: explicit teardown request / ack.
+	MessageTypeTerminalClose = "terminal.close"
+	// TerminalExit — daemon → client: child process exited; carries exit code and optional reason.
+	MessageTypeTerminalExit = "terminal.exit"
+	// TerminalError — daemon → client: open/resize/etc. failed; carries human-readable code+message.
+	MessageTypeTerminalError = "terminal.error"
+)
+
+// TerminalOpenPayload requests a PTY session bound to the given task's
+// workdir. WorkspaceID is the workspace the caller is acting in; the daemon
+// must reject if it does not match the task's workspace.
+type TerminalOpenPayload struct {
+	RequestID   string `json:"request_id"`
+	TaskID      string `json:"task_id"`
+	WorkspaceID string `json:"workspace_id"`
+	UserID      string `json:"user_id,omitempty"`
+	Cols        uint16 `json:"cols"`
+	Rows        uint16 `json:"rows"`
+}
+
+// TerminalOpenedPayload echoes the request_id and carries the session_id the
+// client must include on subsequent data/resize/close frames.
+type TerminalOpenedPayload struct {
+	RequestID string `json:"request_id"`
+	SessionID string `json:"session_id"`
+	WorkDir   string `json:"work_dir"`
+	Shell     string `json:"shell"`
+}
+
+// TerminalDataPayload carries raw PTY bytes in base64.
+type TerminalDataPayload struct {
+	SessionID string `json:"session_id"`
+	DataB64   string `json:"data_b64"`
+}
+
+// TerminalResizePayload updates the PTY window size.
+type TerminalResizePayload struct {
+	SessionID string `json:"session_id"`
+	Cols      uint16 `json:"cols"`
+	Rows      uint16 `json:"rows"`
+}
+
+// TerminalClosePayload requests teardown. Reason is informational.
+type TerminalClosePayload struct {
+	SessionID string `json:"session_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// TerminalExitPayload signals the child process exited.
+type TerminalExitPayload struct {
+	SessionID string `json:"session_id"`
+	ExitCode  int    `json:"exit_code"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// Terminal error codes returned in TerminalErrorPayload.Code.
+const (
+	TerminalErrorCodeWorkspaceMismatch = "workspace_mismatch"
+	TerminalErrorCodeTaskNotFound      = "task_not_found"
+	TerminalErrorCodeSessionNotFound   = "session_not_found"
+	TerminalErrorCodeUnsupportedOS     = "unsupported_os"
+	TerminalErrorCodeSpawnFailed       = "spawn_failed"
+	TerminalErrorCodeInternal          = "internal"
+)
+
+// TerminalErrorPayload reports a failure. RequestID is set when the error
+// is a response to a specific open request; SessionID is set when it
+// references an already-established session.
+type TerminalErrorPayload struct {
+	RequestID string `json:"request_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+}
