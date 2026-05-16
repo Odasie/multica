@@ -120,6 +120,7 @@ describe("PullRequestList sidebar rows", () => {
       makePR({
         state: "merged",
         mergeable_state: "dirty",
+        checks_conclusion: "failed",
         checks_failed: 5,
       }),
     ];
@@ -128,13 +129,26 @@ describe("PullRequestList sidebar rows", () => {
     expect(screen.getByText("Merged")).toBeInTheDocument();
     expect(screen.queryByText("Has merge conflicts")).not.toBeInTheDocument();
     expect(screen.queryByText("Some checks failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Conflicts")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks failed")).not.toBeInTheDocument();
   });
 
-  it("renders Closed-without-merging status for closed PRs", async () => {
-    mockPRs = [makePR({ state: "closed", checks_failed: 1 })];
+  it("renders Closed-without-merging status for closed PRs, suppressing conflict/check badges", async () => {
+    mockPRs = [
+      makePR({
+        state: "closed",
+        mergeable_state: "clean",
+        checks_conclusion: "passed",
+        checks_passed: 3,
+      }),
+    ];
     renderList();
     await waitForRender();
     expect(screen.getByText("Closed without merging")).toBeInTheDocument();
+    expect(screen.queryByText("Ready to merge")).not.toBeInTheDocument();
+    expect(screen.queryByText("All checks passed")).not.toBeInTheDocument();
+    expect(screen.queryByText("No conflicts")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks passed")).not.toBeInTheDocument();
   });
 
   it("hides stats row when all stats are 0 (legacy backend)", async () => {

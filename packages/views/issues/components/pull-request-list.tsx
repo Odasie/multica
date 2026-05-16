@@ -182,13 +182,15 @@ function PullRequestRowDetails({
   const { t } = useT("issues");
   const checksBadge = getChecksBadge(pr, t);
   const conflictsBadge = getConflictsBadge(pr, t);
+  const isTerminal = statusKind === "closed" || statusKind === "merged";
   const showChecksBadge =
+    !isTerminal &&
     !!checksBadge &&
     statusKind !== "checks_failed" &&
     statusKind !== "checks_pending" &&
     statusKind !== "checks_passed";
   const showConflictsBadge =
-    !!conflictsBadge && statusKind !== "conflicts" && statusKind !== "ready";
+    !isTerminal && !!conflictsBadge && statusKind !== "conflicts" && statusKind !== "ready";
 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
