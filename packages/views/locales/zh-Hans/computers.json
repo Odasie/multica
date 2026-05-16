@@ -70,6 +70,34 @@
     "in_use_title": "这台电脑正在使用中",
     "in_use_description": "有 {{count}} 个活跃的 Agent 任务还在这台电脑上运行，请先停止或转交。",
     "confirm": "移除",
-    "cancel": "取消"
+    "cancel": "取消",
+    "toast_removed": "已移除电脑。",
+    "toast_failed": "无法移除这台电脑。"
+  },
+  "detail": {
+    "back": "全部电脑",
+    "not_found_title": "未找到电脑",
+    "not_found_hint": "它可能已被移除，或你没有访问权限。",
+    "last_seen": "最后在线 {{when}}",
+    "tabs": {
+      "overview": "概览",
+      "runtimes": "Agent 运行时",
+      "activity": "动态"
+    },
+    "fact": {
+      "kind": "类型",
+      "status": "状态",
+      "owner": "所有者",
+      "device": "设备",
+      "install_source": "安装来源",
+      "registered": "注册时间",
+      "daemon_id": "守护进程 ID"
+    },
+    "owner_unset": "—",
+    "runtimes_empty": "这台电脑上还没有 Agent 运行时注册。",
+    "runtimes_link": "打开运行时",
+    "activity_empty": "暂无动态。",
+    "activity_registered": "电脑已注册",
+    "activity_last_seen": "最后在线"
   }
 }

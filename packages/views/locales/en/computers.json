@@ -70,6 +70,34 @@
     "in_use_title": "This computer is in use",
     "in_use_description": "{{count}} active agent runs are bound to this computer. Stop or reassign them before removing.",
     "confirm": "Remove",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "toast_removed": "Computer removed.",
+    "toast_failed": "Could not remove this computer."
+  },
+  "detail": {
+    "back": "All computers",
+    "not_found_title": "Computer not found",
+    "not_found_hint": "It may have been removed, or you don't have access.",
+    "last_seen": "Last seen {{when}}",
+    "tabs": {
+      "overview": "Overview",
+      "runtimes": "Agent runtimes",
+      "activity": "Activity"
+    },
+    "fact": {
+      "kind": "Kind",
+      "status": "Status",
+      "owner": "Owner",
+      "device": "Device",
+      "install_source": "Install source",
+      "registered": "Registered",
+      "daemon_id": "Daemon ID"
+    },
+    "owner_unset": "—",
+    "runtimes_empty": "No agent runtimes have registered on this computer yet.",
+    "runtimes_link": "Open runtime",
+    "activity_empty": "No activity to show yet.",
+    "activity_registered": "Computer registered",
+    "activity_last_seen": "Last seen"
   }
 }
