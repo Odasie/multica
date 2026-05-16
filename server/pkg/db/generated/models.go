@@ -224,13 +224,15 @@ type DaemonConnection struct {
 }
 
 type DaemonToken struct {
-	ID          pgtype.UUID        `json:"id"`
-	TokenHash   string             `json:"token_hash"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	DaemonID    string             `json:"daemon_id"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	ID              pgtype.UUID        `json:"id"`
+	TokenHash       string             `json:"token_hash"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	DaemonID        string             `json:"daemon_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	RevokedAt       pgtype.Timestamptz `json:"revoked_at"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	InstallSource   pgtype.Text        `json:"install_source"`
 }
 
 type Feedback struct {

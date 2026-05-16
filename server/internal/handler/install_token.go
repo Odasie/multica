@@ -149,6 +149,14 @@ func (h *Handler) ExchangeInstallToken(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: consumed.WorkspaceID,
 		DaemonID:    body.DaemonID,
 		ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
+		// D3 / §6.2: persist install-time provenance so DaemonRegister can
+		// hydrate the new agent_runtime row's owner_id (= the user who
+		// minted the install token) and metadata.install_source. Without
+		// this, every script-installed Computer is ownerless and shows
+		// "Unknown" install source in the UI — and a non-admin installer
+		// is not recognised as owner by canRemove / canEditRuntime.
+		CreatedByUserID: consumed.CreatedByUserID,
+		InstallSource:   pgtype.Text{String: "script", Valid: true},
 	})
 	if err != nil {
 		slog.Error("exchange install token: insert daemon token", "error", err)

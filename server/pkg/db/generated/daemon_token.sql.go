@@ -12,16 +12,25 @@ import (
 )
 
 const createDaemonToken = `-- name: CreateDaemonToken :one
-INSERT INTO daemon_token (token_hash, workspace_id, daemon_id, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, revoked_at
+INSERT INTO daemon_token (
+    token_hash,
+    workspace_id,
+    daemon_id,
+    expires_at,
+    created_by_user_id,
+    install_source
+)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, revoked_at, created_by_user_id, install_source
 `
 
 type CreateDaemonTokenParams struct {
-	TokenHash   string             `json:"token_hash"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	DaemonID    string             `json:"daemon_id"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	TokenHash       string             `json:"token_hash"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	DaemonID        string             `json:"daemon_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	InstallSource   pgtype.Text        `json:"install_source"`
 }
 
 func (q *Queries) CreateDaemonToken(ctx context.Context, arg CreateDaemonTokenParams) (DaemonToken, error) {
@@ -30,6 +39,8 @@ func (q *Queries) CreateDaemonToken(ctx context.Context, arg CreateDaemonTokenPa
 		arg.WorkspaceID,
 		arg.DaemonID,
 		arg.ExpiresAt,
+		arg.CreatedByUserID,
+		arg.InstallSource,
 	)
 	var i DaemonToken
 	err := row.Scan(
@@ -40,6 +51,8 @@ func (q *Queries) CreateDaemonToken(ctx context.Context, arg CreateDaemonTokenPa
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.RevokedAt,
+		&i.CreatedByUserID,
+		&i.InstallSource,
 	)
 	return i, err
 }
@@ -93,8 +106,42 @@ func (q *Queries) DeleteExpiredDaemonTokens(ctx context.Context) error {
 	return err
 }
 
+const getActiveDaemonTokenInstall = `-- name: GetActiveDaemonTokenInstall :one
+SELECT created_by_user_id, install_source
+FROM daemon_token
+WHERE workspace_id = $1
+  AND daemon_id = $2
+  AND revoked_at IS NULL
+  AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetActiveDaemonTokenInstallParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	DaemonID    string      `json:"daemon_id"`
+}
+
+type GetActiveDaemonTokenInstallRow struct {
+	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+	InstallSource   pgtype.Text `json:"install_source"`
+}
+
+// Returns the install-time provenance (creator + source) for the active
+// daemon_token bound to (workspace_id, daemon_id). DaemonRegister calls
+// this on the mdt_ auth branch to seed agent_runtime.owner_id and
+// metadata.install_source so script-installed Computers carry their
+// minter identity through the register path. Picks the most recent
+// non-revoked row if multiple mdt_ tokens exist for the same daemon.
+func (q *Queries) GetActiveDaemonTokenInstall(ctx context.Context, arg GetActiveDaemonTokenInstallParams) (GetActiveDaemonTokenInstallRow, error) {
+	row := q.db.QueryRow(ctx, getActiveDaemonTokenInstall, arg.WorkspaceID, arg.DaemonID)
+	var i GetActiveDaemonTokenInstallRow
+	err := row.Scan(&i.CreatedByUserID, &i.InstallSource)
+	return i, err
+}
+
 const getDaemonTokenByHash = `-- name: GetDaemonTokenByHash :one
-SELECT id, token_hash, workspace_id, daemon_id, expires_at, created_at, revoked_at FROM daemon_token
+SELECT id, token_hash, workspace_id, daemon_id, expires_at, created_at, revoked_at, created_by_user_id, install_source FROM daemon_token
 WHERE token_hash = $1 AND expires_at > now() AND revoked_at IS NULL
 `
 
@@ -113,6 +160,8 @@ func (q *Queries) GetDaemonTokenByHash(ctx context.Context, tokenHash string) (D
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.RevokedAt,
+		&i.CreatedByUserID,
+		&i.InstallSource,
 	)
 	return i, err
 }

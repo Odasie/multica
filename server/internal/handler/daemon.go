@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/daemonws"
@@ -269,23 +270,54 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	req.WorkspaceID = uuidToString(wsUUID)
 
-	// Verify workspace access and resolve owner.
-	// Daemon tokens (mdt_) prove workspace access directly; OwnerID will be zero
-	// (the SQL COALESCE preserves any existing owner on upsert).
+	// Verify workspace access and resolve owner + install source.
+	// Daemon tokens (mdt_) prove workspace access directly. The token row was
+	// stamped at exchange time with the install-token minter (D3) — we hydrate
+	// owner_id from that so a non-admin installer is recognised as the
+	// Computer's owner by canRemove / canEditRuntime, instead of every
+	// script-installed Computer being orphaned.
 	// PAT/JWT tokens require a membership check and set OwnerID from the member.
 	var ownerID pgtype.UUID
+	installSource := "" // empty => UpsertAgentRuntime keeps the prior metadata
 	if daemonWsID := middleware.DaemonWorkspaceIDFromContext(r.Context()); daemonWsID != "" {
 		if daemonWsID != req.WorkspaceID {
 			writeError(w, http.StatusNotFound, "workspace not found")
 			return
 		}
-		// ownerID stays zero — COALESCE keeps the existing owner on upsert.
+		if info, err := h.Queries.GetActiveDaemonTokenInstall(r.Context(), db.GetActiveDaemonTokenInstallParams{
+			WorkspaceID: wsUUID,
+			DaemonID:    req.DaemonID,
+		}); err == nil {
+			if info.CreatedByUserID.Valid {
+				ownerID = info.CreatedByUserID
+			}
+			if info.InstallSource.Valid {
+				installSource = info.InstallSource.String
+			} else {
+				// mdt_ token without a stamped source means it was issued before
+				// the install_source column landed. Treat as `script` since no
+				// other path mints mdt_ today.
+				installSource = "script"
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("daemon register: lookup install provenance failed", "error", err, "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID)
+		}
+		// If the lookup returns no rows, ownerID stays zero — COALESCE keeps
+		// any existing owner on upsert. This matches the prior behaviour for
+		// legacy mdt_ rows minted before this PR.
 	} else {
 		member, ok := h.requireWorkspaceMember(w, r, req.WorkspaceID, "workspace not found")
 		if !ok {
 			return
 		}
 		ownerID = member.UserID
+		// PAT path covers two install shapes we can distinguish: Desktop's
+		// embedded daemon (launched_by=="desktop") vs the legacy Advanced
+		// manual install (`multica login --token` + `multica daemon start`).
+		// We pick the label later, after launched_by is in scope inside the
+		// per-runtime loop, since this scope hasn't seen `req.LaunchedBy` yet
+		// in a clean way — set a sentinel ("__pat__") and resolve below.
+		installSource = "__pat__"
 	}
 
 	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
@@ -317,11 +349,25 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		if runtime.Status == "offline" {
 			status = "offline"
 		}
-		metadata, _ := json.Marshal(map[string]any{
+		runtimeInstallSource := installSource
+		if runtimeInstallSource == "__pat__" {
+			// PAT path: Desktop embeds a daemon and passes launched_by="desktop";
+			// every other PAT register is the legacy Advanced manual install.
+			if strings.EqualFold(strings.TrimSpace(req.LaunchedBy), "desktop") {
+				runtimeInstallSource = "desktop_auto"
+			} else {
+				runtimeInstallSource = "manual"
+			}
+		}
+		metaFields := map[string]any{
 			"version":     runtime.Version,
 			"cli_version": req.CLIVersion,
 			"launched_by": req.LaunchedBy,
-		})
+		}
+		if runtimeInstallSource != "" {
+			metaFields["install_source"] = runtimeInstallSource
+		}
+		metadata, _ := json.Marshal(metaFields)
 
 		row, err := h.Queries.UpsertAgentRuntime(r.Context(), db.UpsertAgentRuntimeParams{
 			WorkspaceID: wsUUID,
