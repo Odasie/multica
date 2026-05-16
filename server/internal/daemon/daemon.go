@@ -664,22 +664,49 @@ func (d *Daemon) deregisterRuntimes() {
 	}
 }
 
-// resolveAuth loads the auth token from the CLI config for the active profile.
+// resolveAuth picks the credential the daemon will use for /api/daemon/*
+// register and heartbeat calls. Resolution order (RFC v6.1 §6.4 / R1):
+//
+//  1. mdt_ from the daemon credential store (created via `multica daemon
+//     start --install-token`). Cross-platform, file-backed, 0600.
+//  2. mul_ PAT from the CLI config (legacy path; populated by
+//     `multica login --token`). DaemonAuth on the server falls back to PAT
+//     when the prefix matches, so this keeps the pre-RFC flow working
+//     unchanged for users who haven't migrated to install tokens.
+//
+// When both are missing, fail with a hint pointing at whichever flow the
+// user is most likely to be on.
 func (d *Daemon) resolveAuth() error {
+	if store, err := cli.LoadDaemonCredentials(d.cfg.Profile); err == nil {
+		if cred, ok := cli.FindDaemonCredential(store, d.cfg.ServerBaseURL, d.cfg.DaemonID, ""); ok && cred.DaemonToken != "" {
+			d.client.SetToken(cred.DaemonToken)
+			d.logger.Info("authenticated", "via", "daemon_token")
+			d.logger.Debug("daemon token loaded",
+				"profile", d.cfg.Profile,
+				"workspace_id", cred.WorkspaceID,
+				"token_len", len(cred.DaemonToken))
+			return nil
+		}
+	} else {
+		// Don't fail the daemon over a corrupt credentials.json — log it
+		// and fall through to PAT so the user has a recovery path.
+		d.logger.Warn("load daemon credentials", "error", err)
+	}
+
 	cfg, err := cli.LoadCLIConfigForProfile(d.cfg.Profile)
 	if err != nil {
 		return fmt.Errorf("load CLI config: %w", err)
 	}
 	if cfg.Token == "" {
-		loginHint := "'multica login'"
+		loginHint := "'multica login' or 'multica daemon start --install-token <mit_…>'"
 		if d.cfg.Profile != "" {
-			loginHint = fmt.Sprintf("'multica login --profile %s'", d.cfg.Profile)
+			loginHint = fmt.Sprintf("'multica login --profile %s' or 'multica daemon start --install-token <mit_…> --profile %s'", d.cfg.Profile, d.cfg.Profile)
 		}
 		d.logger.Warn("not authenticated — run " + loginHint + " to authenticate, then restart the daemon")
 		return fmt.Errorf("not authenticated: run %s first", loginHint)
 	}
 	d.client.SetToken(cfg.Token)
-	d.logger.Info("authenticated")
+	d.logger.Info("authenticated", "via", "pat")
 	d.logger.Debug("auth token loaded", "profile", d.cfg.Profile, "token_len", len(cfg.Token))
 	return nil
 }

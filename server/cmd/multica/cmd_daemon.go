@@ -83,6 +83,7 @@ func init() {
 	f.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
 	f.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
 	f.Duration("auto-update-interval", 0, "How often to poll GitHub for a newer release (env: MULTICA_DAEMON_AUTO_UPDATE_INTERVAL)")
+	f.String("install-token", "", "Exchange a one-time install token (mit_…) for a long-lived daemon credential on first start (env: MULTICA_INSTALL_TOKEN)")
 
 	daemonLogsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
 	daemonLogsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
@@ -102,6 +103,7 @@ func init() {
 	rf.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
 	rf.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
 	rf.Duration("auto-update-interval", 0, "How often to poll GitHub for a newer release (env: MULTICA_DAEMON_AUTO_UPDATE_INTERVAL)")
+	rf.String("install-token", "", "Exchange a one-time install token (mit_…) for a long-lived daemon credential on first start (env: MULTICA_INSTALL_TOKEN)")
 
 	df := daemonDiskUsageCmd.Flags()
 	df.Bool("by-workspace", false, "Aggregate output by workspace instead of by task")
@@ -154,11 +156,110 @@ func healthPortForProfile(profile string) int {
 // --- daemon start ---
 
 func runDaemonStart(cmd *cobra.Command, _ []string) error {
+	// Exchange a one-time install token before any process branching. An
+	// mit_ is strictly single-use server-side, so we do this in the parent
+	// and let the background child pick the resulting mdt_ up from the
+	// credential store on disk. The flag itself is stripped from
+	// buildDaemonStartArgs for the same reason.
+	if err := maybeExchangeInstallToken(cmd); err != nil {
+		return err
+	}
+
 	foreground, _ := cmd.Flags().GetBool("foreground")
 	if foreground {
 		return runDaemonForeground(cmd)
 	}
 	return runDaemonBackground(cmd)
+}
+
+// maybeExchangeInstallToken redeems a `mit_` install token for a long-lived
+// `mdt_` daemon credential when the user passed --install-token (or the
+// MULTICA_INSTALL_TOKEN env var). On success the credential is persisted via
+// SaveDaemonCredentials so subsequent starts (and the child process spawned
+// by runDaemonBackground) authenticate from disk.
+//
+// No-op when no install token is supplied — the daemon then falls back to
+// the existing credential path: keychain → CLIConfig.Token (PAT). That
+// preserves the legacy "multica login --token <mul_> + daemon start" flow.
+func maybeExchangeInstallToken(cmd *cobra.Command) error {
+	token, _ := cmd.Flags().GetString("install-token")
+	if strings.TrimSpace(token) == "" {
+		token = strings.TrimSpace(os.Getenv("MULTICA_INSTALL_TOKEN"))
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	if !strings.HasPrefix(token, "mit_") {
+		return fmt.Errorf("--install-token must start with 'mit_' (got %d-char value)", len(token))
+	}
+
+	profile := resolveProfile(cmd)
+
+	// Resolve server URL the same way runDaemonForeground does so the
+	// exchange targets the same host the daemon will then register against.
+	serverURL := cli.FlagOrEnv(cmd, "server-url", "MULTICA_SERVER_URL", "")
+	if serverURL == "" {
+		if c, err := cli.LoadCLIConfigForProfile(profile); err == nil && c.ServerURL != "" {
+			serverURL = c.ServerURL
+		}
+	}
+	if serverURL == "" {
+		serverURL = daemon.DefaultServerURL
+	}
+	normalized, err := daemon.NormalizeServerBaseURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("normalize server URL: %w", err)
+	}
+
+	// Daemon identity must be stable across the exchange and the very first
+	// register/heartbeat. EnsureDaemonID writes (or reads) the persistent
+	// UUID; using --daemon-id overrides it the same way LoadConfig does.
+	daemonID := strings.TrimSpace(flagString(cmd, "daemon-id"))
+	if daemonID == "" {
+		daemonID = strings.TrimSpace(os.Getenv("MULTICA_DAEMON_ID"))
+	}
+	if daemonID == "" {
+		persisted, err := daemon.EnsureDaemonID(profile)
+		if err != nil {
+			return fmt.Errorf("ensure daemon id: %w", err)
+		}
+		daemonID = persisted
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := cli.ExchangeInstallToken(ctx, normalized, token, daemonID)
+	if err != nil {
+		switch {
+		case errors.Is(err, cli.ErrInstallTokenAlreadyUsed):
+			return fmt.Errorf("install token already redeemed — generate a new one from Add Computer in the workspace UI")
+		case errors.Is(err, cli.ErrInstallTokenInvalid):
+			return fmt.Errorf("install token is invalid or expired — generate a new one from Add Computer in the workspace UI")
+		default:
+			return err
+		}
+	}
+
+	store, err := cli.LoadDaemonCredentials(profile)
+	if err != nil {
+		return fmt.Errorf("load daemon credentials: %w", err)
+	}
+	store = cli.UpsertDaemonCredential(store, cli.DaemonCredential{
+		ServerURL:   normalized,
+		WorkspaceID: resp.WorkspaceID,
+		DaemonID:    resp.DaemonID,
+		DaemonToken: resp.DaemonToken,
+		IssuedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := cli.SaveDaemonCredentials(store, profile); err != nil {
+		return fmt.Errorf("save daemon credentials: %w", err)
+	}
+
+	// Never print the token. Echo enough context for an operator to know
+	// the exchange landed.
+	fmt.Fprintf(os.Stderr, "Install token redeemed; daemon credential saved for workspace %s\n", resp.WorkspaceID)
+	return nil
 }
 
 func runDaemonBackground(cmd *cobra.Command) error {
