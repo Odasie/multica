@@ -117,3 +117,52 @@ export interface ListAutopilotRunsResponse {
   runs: AutopilotRun[];
   total: number;
 }
+
+// Webhook delivery enum is server-canonical. The frontend MUST `default`
+// any switch on it to a generic fallback — see API Response Compatibility
+// rules in CLAUDE.md. PR1 collapsed `skipped` into `dispatched` (the run
+// itself carries the skip state); a future server may add new values.
+export type WebhookDeliveryStatus =
+  | "queued"
+  | "dispatched"
+  | "rejected"
+  | "ignored"
+  | "failed";
+
+export type WebhookSignatureStatus =
+  | "not_required"
+  | "valid"
+  | "invalid"
+  | "missing";
+
+export interface WebhookDelivery {
+  id: string;
+  workspace_id: string;
+  autopilot_id: string;
+  trigger_id: string;
+  provider: string;
+  event: string;
+  dedupe_key: string | null;
+  dedupe_source: string | null;
+  signature_status: WebhookSignatureStatus;
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  content_type: string | null;
+  response_status: number | null;
+  autopilot_run_id: string | null;
+  replayed_from_delivery_id: string | null;
+  error: string | null;
+  received_at: string;
+  last_attempt_at: string;
+  created_at: string;
+  // Detail-only fields. The list endpoint omits these to keep the wire
+  // size bounded (raw_body alone can be up to 256 KiB per delivery).
+  selected_headers?: Record<string, unknown> | null;
+  raw_body?: string | null;
+  response_body?: string | null;
+}
+
+export interface ListWebhookDeliveriesResponse {
+  deliveries: WebhookDelivery[];
+  total: number;
+}

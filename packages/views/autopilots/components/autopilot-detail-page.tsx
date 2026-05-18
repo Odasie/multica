@@ -56,6 +56,7 @@ import { ReadonlyContent } from "../../editor";
 import { TranscriptButton } from "../../common/task-transcript";
 import { AutopilotDialog } from "./autopilot-dialog";
 import { WebhookPayloadPreview } from "./webhook-payload-preview";
+import { WebhookDeliveriesSection } from "./webhook-deliveries-section";
 import { useT } from "../../i18n";
 
 function formatDate(date: string): string {
@@ -738,6 +739,14 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
               </div>
             )}
           </section>
+
+          {/* Webhook deliveries — only renders when at least one webhook
+              trigger is configured. The component does its own fetch so
+              schedule-only autopilots don't pay for an empty list query. */}
+          <WebhookDeliveriesSection
+            autopilotId={autopilotId}
+            hasWebhookTrigger={triggers.some((trig) => trig.kind === "webhook")}
+          />
 
           {/* Run History */}
           <section className="space-y-3">

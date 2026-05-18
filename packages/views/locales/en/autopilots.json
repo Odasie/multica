@@ -151,6 +151,51 @@
       "deleting": "Deleting..."
     }
   },
+  "deliveries": {
+    "section_title": "Webhook Deliveries",
+    "empty": "No webhook deliveries yet. Send a POST to the webhook URL to see entries here.",
+    "row": {
+      "attempts": "{{count}}× attempts",
+      "replay_badge": "Replay"
+    },
+    "status": {
+      "queued": "Queued",
+      "dispatched": "Dispatched",
+      "rejected": "Rejected",
+      "ignored": "Ignored",
+      "failed": "Failed"
+    },
+    "signature": {
+      "not_required": "No signature",
+      "valid": "Signature valid",
+      "invalid": "Signature invalid",
+      "missing": "Signature missing"
+    },
+    "detail": {
+      "title": "Delivery",
+      "received_at": "Received",
+      "last_attempt_at": "Last attempt",
+      "attempt_count": "Attempts",
+      "response_status": "Response",
+      "dedupe_key": "Dedupe key",
+      "dedupe_source": "Dedupe source",
+      "content_type": "Content-Type",
+      "replayed_from": "Replayed from",
+      "error_label": "Error",
+      "raw_body": "Raw body",
+      "selected_headers": "Headers",
+      "response_body": "Response body"
+    },
+    "replay": {
+      "action": "Replay",
+      "in_progress": "Replaying...",
+      "toast_success": "Delivery replayed",
+      "toast_failed": "Replay failed",
+      "disabled_invalid_signature": "Can't replay — signature was invalid",
+      "disabled_rejected": "Can't replay a rejected delivery",
+      "disabled_queued": "Still queued — replay once it settles"
+    }
+  },
   "add_trigger_dialog": {
     "title": "Add Trigger",
     "type_label": "Type",
