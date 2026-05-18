@@ -51,6 +51,24 @@ func parseProjectIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, b
 	return u, true
 }
 
+// parseSquadIDParam reads ?squad_id=<uuid> off the URL with the same
+// nullable-narg semantics as parseProjectIDParam. When the param is
+// non-empty the handler forces the raw-stream code path because the
+// dashboard rollup table (migration 084) does not carry a squad
+// dimension.
+func parseSquadIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
+	raw := r.URL.Query().Get("squad_id")
+	if raw == "" {
+		return pgtype.UUID{}, true
+	}
+	u, err := util.ParseUUID(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid squad_id")
+		return pgtype.UUID{}, false
+	}
+	return u, true
+}
+
 // DashboardUsageDailyResponse is one (date, model) bucket. Cost-side math
 // happens on the client from a per-model pricing table; model stays on the
 // wire for that reason.
@@ -65,10 +83,11 @@ type DashboardUsageDailyResponse struct {
 }
 
 // GetDashboardUsageDaily returns per-(date, model) token rows for the
-// workspace, optionally scoped to a project. When the dashboard rollup
-// is enabled (USAGE_DASHBOARD_ROLLUP_ENABLED=true) reads come from
-// `task_usage_dashboard_daily` (migration 084); otherwise from the raw
-// task_usage stream.
+// workspace, optionally scoped to a project and/or squad. When the
+// dashboard rollup is enabled (USAGE_DASHBOARD_ROLLUP_ENABLED=true) reads
+// come from `task_usage_dashboard_daily` (migration 084); otherwise from
+// the raw task_usage stream. A squad filter always forces the raw path
+// because the rollup table has no squad dimension.
 func (h *Handler) GetDashboardUsageDaily(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
@@ -78,9 +97,13 @@ func (h *Handler) GetDashboardUsageDaily(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	squadID, ok := parseSquadIDParam(w, r)
+	if !ok {
+		return
+	}
 	since := parseSinceParam(r, 30)
 
-	resp, err := h.listDashboardUsageDaily(r.Context(), parseUUID(workspaceID), since, projectID)
+	resp, err := h.listDashboardUsageDaily(r.Context(), parseUUID(workspaceID), since, projectID, squadID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list usage")
 		return
@@ -93,8 +116,13 @@ func (h *Handler) listDashboardUsageDaily(
 	workspaceID pgtype.UUID,
 	since pgtype.Timestamptz,
 	projectID pgtype.UUID,
+	squadID pgtype.UUID,
 ) ([]DashboardUsageDailyResponse, error) {
-	if h.cfg.UseDailyRollupForDashboard {
+	// The dashboard rollup table (migration 084) does not carry a squad
+	// dimension. When a squad filter is requested we force the raw-stream
+	// path regardless of the rollup feature flag — see the squad-predicate
+	// comment on ListDashboardUsageDaily for the rationale.
+	if h.cfg.UseDailyRollupForDashboard && !squadID.Valid {
 		rows, err := h.Queries.ListDashboardUsageDailyRollup(ctx, db.ListDashboardUsageDailyRollupParams{
 			WorkspaceID: workspaceID,
 			Since:       since,
@@ -121,6 +149,7 @@ func (h *Handler) listDashboardUsageDaily(
 		WorkspaceID: workspaceID,
 		Since:       since,
 		ProjectID:   projectID,
+		SquadID:     squadID,
 	})
 	if err != nil {
 		return nil, err
@@ -152,9 +181,9 @@ type DashboardUsageByAgentResponse struct {
 }
 
 // GetDashboardUsageByAgent returns per-(agent, model) token aggregates for
-// the workspace, optionally scoped to a project. Switches to the rollup
-// table when UseDailyRollupForDashboard is on (same gating as the daily
-// endpoint above).
+// the workspace, optionally scoped to a project and/or squad. Switches to
+// the rollup table when UseDailyRollupForDashboard is on (same gating as
+// the daily endpoint above). A squad filter always forces the raw path.
 func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
@@ -164,9 +193,13 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	squadID, ok := parseSquadIDParam(w, r)
+	if !ok {
+		return
+	}
 	since := parseSinceParam(r, 30)
 
-	resp, err := h.listDashboardUsageByAgent(r.Context(), parseUUID(workspaceID), since, projectID)
+	resp, err := h.listDashboardUsageByAgent(r.Context(), parseUUID(workspaceID), since, projectID, squadID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list usage by agent")
 		return
@@ -179,8 +212,9 @@ func (h *Handler) listDashboardUsageByAgent(
 	workspaceID pgtype.UUID,
 	since pgtype.Timestamptz,
 	projectID pgtype.UUID,
+	squadID pgtype.UUID,
 ) ([]DashboardUsageByAgentResponse, error) {
-	if h.cfg.UseDailyRollupForDashboard {
+	if h.cfg.UseDailyRollupForDashboard && !squadID.Valid {
 		rows, err := h.Queries.ListDashboardUsageByAgentRollup(ctx, db.ListDashboardUsageByAgentRollupParams{
 			WorkspaceID: workspaceID,
 			Since:       since,
@@ -207,6 +241,7 @@ func (h *Handler) listDashboardUsageByAgent(
 		WorkspaceID: workspaceID,
 		Since:       since,
 		ProjectID:   projectID,
+		SquadID:     squadID,
 	})
 	if err != nil {
 		return nil, err
@@ -237,8 +272,8 @@ type DashboardAgentRunTimeResponse struct {
 }
 
 // GetDashboardAgentRunTime returns per-agent total task run time (seconds)
-// and task counts for the workspace, optionally scoped to a project. Only
-// terminal tasks (completed or failed) with both started_at and
+// and task counts for the workspace, optionally scoped to a project and/or
+// squad. Only terminal tasks (completed or failed) with both started_at and
 // completed_at populated contribute, since queued/running tasks have no
 // finite duration.
 func (h *Handler) GetDashboardAgentRunTime(w http.ResponseWriter, r *http.Request) {
@@ -250,12 +285,17 @@ func (h *Handler) GetDashboardAgentRunTime(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	squadID, ok := parseSquadIDParam(w, r)
+	if !ok {
+		return
+	}
 	since := parseSinceParam(r, 30)
 
 	rows, err := h.Queries.ListDashboardAgentRunTime(r.Context(), db.ListDashboardAgentRunTimeParams{
 		WorkspaceID: parseUUID(workspaceID),
 		Since:       since,
 		ProjectID:   projectID,
+		SquadID:     squadID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent runtime")
@@ -285,10 +325,10 @@ type DashboardRunTimeDailyResponse struct {
 }
 
 // GetDashboardRunTimeDaily returns per-date total task run time and task
-// counts for the workspace, optionally scoped to a project. Only terminal
-// tasks (completed or failed) with both started_at and completed_at
-// populated contribute. Bucketed by completed_at so the day boundaries
-// line up with the per-agent run-time card.
+// counts for the workspace, optionally scoped to a project and/or squad.
+// Only terminal tasks (completed or failed) with both started_at and
+// completed_at populated contribute. Bucketed by completed_at so the day
+// boundaries line up with the per-agent run-time card.
 func (h *Handler) GetDashboardRunTimeDaily(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
@@ -298,12 +338,17 @@ func (h *Handler) GetDashboardRunTimeDaily(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	squadID, ok := parseSquadIDParam(w, r)
+	if !ok {
+		return
+	}
 	since := parseSinceParam(r, 30)
 
 	rows, err := h.Queries.ListDashboardRunTimeDaily(r.Context(), db.ListDashboardRunTimeDailyParams{
 		WorkspaceID: parseUUID(workspaceID),
 		Since:       since,
 		ProjectID:   projectID,
+		SquadID:     squadID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list daily runtime")

@@ -588,3 +588,233 @@ func TestDashboardRollupReattributesOnLinkTaskToIssue(t *testing.T) {
 		t.Errorf("NULL bucket: expected 0 tokens after link, got %d", nullAfter)
 	}
 }
+
+// TestDashboardEndpoints_SquadFilter covers ?squad_id=<uuid> across the
+// four dashboard endpoints:
+//   - issues whose assignee_type='squad' AND assignee_id matches are IN
+//   - issues with any other assignee (or unassigned) are OUT
+//   - the rollup table doesn't carry squad, so the handler must downgrade
+//     to the raw stream even when UseDailyRollupForDashboard is on
+func TestDashboardEndpoints_SquadFilter(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var runtimeID, agentID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1
+	`, testWorkspaceID).Scan(&runtimeID); err != nil {
+		t.Fatalf("fetch runtime: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
+	`, testWorkspaceID).Scan(&agentID); err != nil {
+		t.Fatalf("fetch agent: %v", err)
+	}
+
+	// Build a squad with the agent as leader (squad.leader_id requires a
+	// real agent reference; squad_member rows aren't needed because the
+	// dashboard query keys off issue.assignee_id, not membership).
+	var squadID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO squad (workspace_id, name, leader_id, creator_id)
+		VALUES ($1, 'dashboard-squad-test', $2, $3)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID) })
+
+	mkIssueWithAssignee := func(assigneeType string, assigneeID any) string {
+		var id string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO issue (workspace_id, title, creator_id, creator_type, assignee_type, assignee_id, number)
+			VALUES (
+				$1, 'squad test', $2, 'member', $3, $4,
+				(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1)
+			)
+			RETURNING id
+		`, testWorkspaceID, testUserID, assigneeType, assigneeID).Scan(&id); err != nil {
+			t.Fatalf("insert issue: %v", err)
+		}
+		t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, id) })
+		return id
+	}
+	squadIssueID := mkIssueWithAssignee("squad", squadID)
+	memberIssueID := mkIssueWithAssignee("member", testUserID)
+
+	now := time.Now().UTC()
+	started := now.Add(-30 * time.Minute)
+	completed := started.Add(10 * time.Minute) // 600s run
+
+	mkTaskWithUsage := func(issueID string, status string, tokens int64) {
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, started_at, completed_at, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, now())
+			RETURNING id
+		`, agentID, issueID, runtimeID, status, started, completed).Scan(&taskID); err != nil {
+			t.Fatalf("insert task: %v", err)
+		}
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
+			VALUES ($1, 'claude', 'claude-3-5-sonnet', $2, 0, now())
+		`, taskID, tokens); err != nil {
+			t.Fatalf("insert task_usage: %v", err)
+		}
+		t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	}
+
+	mkTaskWithUsage(squadIssueID, "completed", 1000)
+	mkTaskWithUsage(memberIssueID, "completed", 500)
+
+	type dailyRow struct {
+		Model       string `json:"model"`
+		InputTokens int64  `json:"input_tokens"`
+	}
+	type runtimeRow struct {
+		AgentID   string `json:"agent_id"`
+		TaskCount int32  `json:"task_count"`
+	}
+
+	// daily — squad-scoped
+	{
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=1&squad_id="+squadID, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("daily squad: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var rows []dailyRow
+		_ = json.NewDecoder(w.Body).Decode(&rows)
+		var total int64
+		for _, r := range rows {
+			if r.Model == "claude-3-5-sonnet" {
+				total += r.InputTokens
+			}
+		}
+		if total < 1000 {
+			t.Errorf("daily squad: expected >=1000 tokens, got %d", total)
+		}
+		if total >= 1500 {
+			t.Errorf("daily squad: filter leaked — expected <1500 tokens, got %d", total)
+		}
+	}
+
+	// by-agent — squad-scoped
+	{
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardUsageByAgent(w, newRequest("GET", "/api/dashboard/usage/by-agent?days=1&squad_id="+squadID, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("by-agent squad: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var rows []struct {
+			AgentID     string `json:"agent_id"`
+			InputTokens int64  `json:"input_tokens"`
+		}
+		_ = json.NewDecoder(w.Body).Decode(&rows)
+		var total int64
+		for _, r := range rows {
+			if r.AgentID == agentID {
+				total += r.InputTokens
+			}
+		}
+		if total < 1000 {
+			t.Errorf("by-agent squad: expected >=1000 tokens for agent, got %d", total)
+		}
+		if total >= 1500 {
+			t.Errorf("by-agent squad: filter leaked — expected <1500 tokens, got %d", total)
+		}
+	}
+
+	// agent-runtime — squad-scoped
+	{
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardAgentRunTime(w, newRequest("GET", "/api/dashboard/agent-runtime?days=1&squad_id="+squadID, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("agent-runtime squad: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var rows []runtimeRow
+		if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+			t.Fatalf("agent-runtime squad: decode: %v", err)
+		}
+		var tasks int32
+		for _, r := range rows {
+			if r.AgentID == agentID {
+				tasks += r.TaskCount
+			}
+		}
+		// Exactly one task is squad-assigned; the member-assigned task must
+		// be excluded. The squad UUID is fresh so this is safe even in the
+		// shared fixture workspace.
+		if tasks != 1 {
+			t.Errorf("agent-runtime squad: expected exactly 1 task, got %d", tasks)
+		}
+	}
+
+	// runtime/daily — squad-scoped
+	{
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardRunTimeDaily(w, newRequest("GET", "/api/dashboard/runtime/daily?days=1&squad_id="+squadID, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("runtime daily squad: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var rows []struct {
+			TaskCount int32 `json:"task_count"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+			t.Fatalf("runtime daily squad: decode: %v", err)
+		}
+		var tasks int32
+		for _, r := range rows {
+			tasks += r.TaskCount
+		}
+		if tasks != 1 {
+			t.Errorf("runtime daily squad: expected 1 task, got %d", tasks)
+		}
+	}
+
+	// rollup-flag downgrade — with UseDailyRollupForDashboard=true and a
+	// squad filter set, the handler MUST bypass the rollup table (which
+	// has no squad column) and run the raw stream query. We prove this by
+	// flipping the flag without populating the rollup table — if the
+	// downgrade fails the response will be empty and the >=1000 assertion
+	// will fail. This locks down the `&& !squadID.Valid` guard so a future
+	// edit changing it to `||` (or dropping it entirely) gets caught.
+	{
+		orig := testHandler.cfg.UseDailyRollupForDashboard
+		testHandler.cfg.UseDailyRollupForDashboard = true
+		t.Cleanup(func() { testHandler.cfg.UseDailyRollupForDashboard = orig })
+
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=1&squad_id="+squadID, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("daily squad rollup-downgrade: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var rows []dailyRow
+		if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+			t.Fatalf("daily squad rollup-downgrade: decode: %v", err)
+		}
+		var total int64
+		for _, r := range rows {
+			if r.Model == "claude-3-5-sonnet" {
+				total += r.InputTokens
+			}
+		}
+		if total < 1000 {
+			t.Errorf("daily squad rollup-downgrade: expected >=1000 tokens (proves raw path was used), got %d", total)
+		}
+		if total >= 1500 {
+			t.Errorf("daily squad rollup-downgrade: filter leaked — expected <1500 tokens, got %d", total)
+		}
+	}
+
+	// invalid squad_id rejected with 400
+	{
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?squad_id=not-a-uuid", nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("invalid squad_id: expected 400, got %d", w.Code)
+		}
+	}
+}
