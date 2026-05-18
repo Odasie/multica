@@ -1206,6 +1206,123 @@ func TestCodexExecuteSemanticInactivityDoesNotAffectNormalTurnCompletion(t *test
 	}
 }
 
+// TestCodexExecuteWatchdogFiresWhenExecCommandHangs reproduces the MUL-2337
+// scenario: codex emits two parallel commandExecution begin events but only
+// one completes — the second function_call_output is lost upstream. The
+// per-call exec watchdog must end the turn quickly rather than burning the
+// full semantic inactivity budget.
+func TestCodexExecuteWatchdogFiresWhenExecCommandHangs(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-hang"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-hang","turn":{"id":"turn-hang"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-hang","item":{"type":"commandExecution","id":"cmd-a","command":"multica issue get"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-hang","item":{"type":"commandExecution","id":"cmd-b","command":"multica issue comment list"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-hang","item":{"type":"commandExecution","id":"cmd-a","aggregatedOutput":"ok"}}}'`+"\n"+
+		`sleep 5`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 3 * time.Second,
+		ExecCommandStuckTimeout:   150 * time.Millisecond,
+	})
+	if result.Status != "timeout" {
+		t.Fatalf("expected timeout, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "exec_command stuck") {
+		t.Fatalf("expected exec_command stuck error, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "cmd-b") {
+		t.Fatalf("expected stuck call_id cmd-b in error, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "multica issue comment list") {
+		t.Fatalf("expected stuck command text in error, got %q", result.Error)
+	}
+}
+
+// TestCodexExecuteWatchdogResetsOnOutputDelta covers a long-running exec
+// that keeps streaming output. The watchdog should not flag it as stuck
+// even when total elapsed exceeds the threshold.
+func TestCodexExecuteWatchdogResetsOnOutputDelta(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-stream"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-stream","turn":{"id":"turn-stream"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-stream","item":{"type":"commandExecution","id":"cmd-stream","command":"long task"}}}'`+"\n"+
+		`for i in 1 2 3 4 5 6; do sleep 0.08; echo '{"jsonrpc":"2.0","method":"item/commandExecution/outputDelta","params":{"threadId":"thr-stream","item":{"type":"commandExecution","id":"cmd-stream"},"delta":"tick"}}'; done`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-stream","item":{"type":"commandExecution","id":"cmd-stream","aggregatedOutput":"done"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-stream","turn":{"id":"turn-stream","status":"completed"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 3 * time.Second,
+		ExecCommandStuckTimeout:   200 * time.Millisecond,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected completed (outputDelta resets the watchdog), got status=%q error=%q", result.Status, result.Error)
+	}
+}
+
+// TestCodexExecuteWatchdogIgnoresClosedExecs guards against a regression
+// where the watchdog would still hold state for a completed exec call,
+// causing false positives once the next quiet period exceeded the
+// threshold. After item/completed the openExec map should be empty.
+func TestCodexExecuteWatchdogIgnoresClosedExecs(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-clean"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-clean","turn":{"id":"turn-clean"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr-clean","item":{"type":"commandExecution","id":"cmd-1","command":"git status"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-clean","item":{"type":"commandExecution","id":"cmd-1","aggregatedOutput":"clean"}}}'`+"\n"+
+		`sleep 5`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 200 * time.Millisecond,
+		// Exec stuck threshold sits well above SemanticInactivityTimeout so
+		// the semantic timer always fires first when nothing is genuinely
+		// stuck. Keeping a healthy gap prevents test flakes when the reader
+		// goroutine is scheduled late under parallel test load.
+		ExecCommandStuckTimeout: 2 * time.Second,
+	})
+	if result.Status != "timeout" {
+		t.Fatalf("expected timeout, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "semantic inactivity") {
+		t.Fatalf("expected semantic inactivity to fire (not exec stuck), got %q", result.Error)
+	}
+}
+
 func writeFakeCodexAppServer(t *testing.T, body string) string {
 	t.Helper()
 	fakePath := filepath.Join(t.TempDir(), "codex")
