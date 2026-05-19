@@ -132,7 +132,14 @@ func resolveSkillsDir(workDir, provider string) (string, error) {
 		// See: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference
 		skillsDir = filepath.Join(workDir, ".github", "skills")
 	case "opencode":
-		// OpenCode natively discovers skills from .opencode/skills/ in the workdir.
+		// OpenCode natively discovers project skills from .opencode/skills/ in
+		// the workdir. ConfigPaths.directories() walks up from the discovery
+		// root looking for a bare `.opencode` directory (no opencode.json
+		// signal required), then skill/index.ts scans `{skill,skills}/**/SKILL.md`
+		// under each match. Discovery is anchored at the task workdir via
+		// `opencode run --dir <workDir>` + PWD override in opencodeBackend —
+		// without those, OpenCode walks from the daemon's inherited PWD and
+		// misses .opencode/skills + AGENTS.md entirely (MUL-2416).
 		skillsDir = filepath.Join(workDir, ".opencode", "skills")
 	case "openclaw":
 		// OpenClaw's native skill scanner reads <workspaceDir>/skills/. The
@@ -168,6 +175,47 @@ func resolveSkillsDir(workDir, provider string) (string, error) {
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 
+// ensureSkillFrontmatter returns SKILL.md content guaranteed to start with a
+// YAML frontmatter block carrying `name`. Runtimes like OpenCode silently drop
+// SKILL.md files whose frontmatter is missing or doesn't have a parseable
+// `name`, so we synthesize one from the sanitized directory slug (which
+// matches the parent folder) plus the DB description when content arrives
+// without frontmatter. Existing frontmatter is left untouched — the import
+// path may have shaped it deliberately to match a specific runtime, and we
+// don't want to clobber that.
+func ensureSkillFrontmatter(content, slug, description string) string {
+	if strings.HasPrefix(content, "---\n") || strings.HasPrefix(content, "---\r\n") {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "name: %s\n", slug)
+	if d := strings.TrimSpace(description); d != "" {
+		fmt.Fprintf(&b, "description: %s\n", yamlEscapeInline(d))
+	}
+	b.WriteString("---\n\n")
+	b.WriteString(content)
+	return b.String()
+}
+
+// yamlEscapeInline returns a YAML-safe inline scalar for the description
+// value. Newlines flatten to spaces (frontmatter is single-line per key here)
+// and embedded double-quotes are escaped. The result is wrapped in double
+// quotes only when the raw value contains characters that would otherwise
+// break a plain scalar (colon, quote, leading/trailing whitespace, etc.).
+func yamlEscapeInline(s string) string {
+	flat := strings.ReplaceAll(s, "\r\n", " ")
+	flat = strings.ReplaceAll(flat, "\n", " ")
+	flat = strings.ReplaceAll(flat, "\r", " ")
+	needsQuote := strings.ContainsAny(flat, `:"'#&*!|>%@`+"`") || strings.HasPrefix(flat, " ") || strings.HasSuffix(flat, " ")
+	if !needsQuote {
+		return flat
+	}
+	escaped := strings.ReplaceAll(flat, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
+}
+
 // sanitizeSkillName converts a skill name to a safe directory name.
 func sanitizeSkillName(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
@@ -187,13 +235,15 @@ func writeSkillFiles(skillsDir string, skills []SkillContextForEnv) error {
 	}
 
 	for _, skill := range skills {
-		dir := filepath.Join(skillsDir, sanitizeSkillName(skill.Name))
+		slug := sanitizeSkillName(skill.Name)
+		dir := filepath.Join(skillsDir, slug)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 
 		// Write main SKILL.md
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill.Content), 0o644); err != nil {
+		body := ensureSkillFrontmatter(skill.Content, slug, skill.Description)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
 			return err
 		}
 

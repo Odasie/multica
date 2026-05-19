@@ -798,8 +798,9 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 		IssueID: "opencode-skill-test",
 		AgentSkills: []SkillContextForEnv{
 			{
-				Name:    "Go Conventions",
-				Content: "Follow Go conventions.",
+				Name:        "Go Conventions",
+				Description: "Follow our internal Go style.",
+				Content:     "Follow Go conventions.",
 				Files: []SkillFileContextForEnv{
 					{Path: "templates/example.go", Content: "package main"},
 				},
@@ -816,8 +817,24 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read .opencode/skills/go-conventions/SKILL.md: %v", err)
 	}
-	if !strings.Contains(string(skillMd), "Follow Go conventions.") {
+	body := string(skillMd)
+	if !strings.Contains(body, "Follow Go conventions.") {
 		t.Error("SKILL.md missing content")
+	}
+	// OpenCode (and every other runtime) silently drops SKILL.md without a
+	// parseable frontmatter `name`. The synthesized frontmatter must lead
+	// with `name:` matching the parent directory slug and carry the
+	// description verbatim from the DB so OpenCode's `skill` tool can route
+	// the model to it by name.
+	prefix := body
+	if len(prefix) > 120 {
+		prefix = prefix[:120]
+	}
+	if !strings.HasPrefix(body, "---\nname: go-conventions\n") {
+		t.Errorf("SKILL.md missing synthesized frontmatter name; got: %q", prefix)
+	}
+	if !strings.Contains(body, "description: Follow our internal Go style.") {
+		t.Errorf("SKILL.md missing synthesized description; got: %q", prefix)
 	}
 
 	// Supporting files should also be under .opencode/skills/.
@@ -837,6 +854,40 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 	// issue_context.md should still be in .agent_context/.
 	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "issue_context.md")); os.IsNotExist(err) {
 		t.Error("expected .agent_context/issue_context.md to exist")
+	}
+}
+
+// Skill content imported from upstream sources (GitHub, ClawHub, Skills.sh)
+// often already carries its own YAML frontmatter — possibly with a `name`
+// that differs from the DB row's display name to match a specific runtime's
+// expectations. The writer must not clobber that block; it should only
+// synthesize when frontmatter is absent.
+func TestWriteContextFilesPreservesExistingSkillFrontmatter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	preExisting := "---\nname: upstream-name\ndescription: imported as-is\n---\n\nbody"
+	ctx := TaskContextForEnv{
+		IssueID: "preserve-frontmatter-test",
+		AgentSkills: []SkillContextForEnv{
+			{
+				Name:        "Display Name",
+				Description: "overridden by upstream frontmatter",
+				Content:     preExisting,
+			},
+		},
+	}
+
+	if err := writeContextFiles(dir, "opencode", ctx); err != nil {
+		t.Fatalf("writeContextFiles failed: %v", err)
+	}
+
+	skillMd, err := os.ReadFile(filepath.Join(dir, ".opencode", "skills", "display-name", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed to read SKILL.md: %v", err)
+	}
+	if string(skillMd) != preExisting {
+		t.Errorf("SKILL.md was rewritten; got:\n%s\nwant:\n%s", skillMd, preExisting)
 	}
 }
 
@@ -2092,7 +2143,7 @@ func TestReuseWritesMissingCodexWorkspaceSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing reused codex workspace skill: %v", err)
 	}
-	if string(data) != "Write clearly." {
+	if !strings.Contains(string(data), "Write clearly.") {
 		t.Errorf("skill content = %q", data)
 	}
 	example, err := os.ReadFile(filepath.Join(reused.CodexHome, "skills", "writing", "examples", "example.md"))
@@ -2151,7 +2202,7 @@ func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing reused codex workspace skill: %v", err)
 	}
-	if string(data) != "Updated writing guidance." {
+	if !strings.Contains(string(data), "Updated writing guidance.") {
 		t.Errorf("skill content = %q", data)
 	}
 	example, err := os.ReadFile(filepath.Join(reused.CodexHome, "skills", "writing", "examples", "example.md"))
@@ -2271,7 +2322,7 @@ func TestPrepareCodexWorkspaceSkillBeatsUserSkillOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace skill not written: %v", err)
 	}
-	if string(data) != "workspace writing" {
+	if !strings.Contains(string(data), "workspace writing") {
 		t.Errorf("SKILL.md = %q, want workspace content", data)
 	}
 	// The user's stale support file must not leak through — seeding is
@@ -2469,7 +2520,7 @@ func TestReuseClearsUserSkillResidueOnWorkspaceConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace SKILL.md missing after reuse: %v", err)
 	}
-	if string(data) != "workspace writing" {
+	if !strings.Contains(string(data), "workspace writing") {
 		t.Errorf("SKILL.md = %q, want workspace content", data)
 	}
 	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "writing", "drafts", "stale.md")); !os.IsNotExist(err) {
