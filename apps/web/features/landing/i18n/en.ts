@@ -287,7 +287,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.5",
         date: "2026-05-21",
-        title: "Local-Time Usage & Smarter Issue State",
+        title: "Local-Time Usage & Issue Custom KV",
         changes: [],
         features: [
           "Usage now uses each user's saved viewing timezone, so workspace and runtime usage match the day boundaries people expect",

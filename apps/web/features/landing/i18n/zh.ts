@@ -287,7 +287,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.5",
         date: "2026-05-21",
-        title: "按查看时区呈现用量与更清晰的 Issue 状态",
+        title: "按查看时区呈现用量，并支持 Issue Custom KV",
         changes: [],
         features: [
           "用量会使用用户保存的查看时区，工作区和运行环境用量会按每个人预期的自然日展示",
