@@ -151,7 +151,7 @@
     "title": "Cloud Runtime",
     "description": "创建托管云端节点，并查看它的 Fleet 状态。",
     "create_title": "新节点",
-    "create_hint": "默认使用共享的 us-west-2 Fleet 配置。",
+    "create_hint": "只需要填写名称、实例规格和磁盘大小，其余配置由 Fleet 默认处理。",
     "nodes_title": "Fleet 节点",
     "refresh": "刷新",
     "nodes_empty": "还没有云端节点",
@@ -167,14 +167,14 @@
       "name": "名称",
       "instance_type": "实例规格",
       "region": "Region",
-      "disk_size": "磁盘 GiB",
+      "disk_size": "磁盘大小 GiB",
       "image_id": "AMI ID",
       "subnet_id": "Subnet ID",
       "key_name": "Key pair",
       "bootstrap_pat": "Bootstrap PAT"
     },
     "placeholders": {
-      "name": "gpu-dev-01",
+      "name": "cloud-dev-01",
       "key_name": "dev-key"
     },
     "validation": {

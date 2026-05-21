@@ -160,7 +160,7 @@
     "title": "Cloud Runtime",
     "description": "Launch a managed cloud node and watch its Fleet status.",
     "create_title": "New node",
-    "create_hint": "Defaults target the shared us-west-2 Fleet configuration.",
+    "create_hint": "Choose a name, instance type, and disk size. Fleet applies the rest.",
     "nodes_title": "Fleet nodes",
     "refresh": "Refresh",
     "nodes_empty": "No cloud nodes",
@@ -183,7 +183,7 @@
       "bootstrap_pat": "Bootstrap PAT"
     },
     "placeholders": {
-      "name": "gpu-dev-01",
+      "name": "cloud-dev-01",
       "key_name": "dev-key"
     },
     "validation": {
