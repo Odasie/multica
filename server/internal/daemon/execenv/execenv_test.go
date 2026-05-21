@@ -2808,13 +2808,13 @@ func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 	}
 }
 
-// TestInjectRuntimeConfigCommentTriggerThreadFirstReads locks in MUL-2387:
-// the runtime config's comment-triggered Workflow section must steer the
-// agent at the thread-aware reads from PR #2787 first (--thread anchored on
-// the trigger comment id, then --recent N with the stderr cursor for
-// pagination) rather than the legacy "dump the whole comment list" recipe.
-// The Available Commands core line also has to surface the new flags so the
-// agent has a single place to discover them.
+// TestInjectRuntimeConfigCommentTriggerThreadFirstReads locks in
+// MUL-2387 + MUL-2421: the runtime config's comment-triggered Workflow
+// section must steer the agent at thread-aware reads first, default the
+// trigger thread to `--thread <id> --tail 30` (bounded), and explain the
+// reply-cursor walk for older replies. `--recent N` stays as the
+// cross-thread fallback. The Available Commands core line also has to
+// surface the `--tail` flag so the agent has a single place to discover it.
 func TestInjectRuntimeConfigCommentTriggerThreadFirstReads(t *testing.T) {
 	t.Parallel()
 
@@ -2837,19 +2837,24 @@ func TestInjectRuntimeConfigCommentTriggerThreadFirstReads(t *testing.T) {
 	s := string(data)
 
 	// Workflow step 2 must read the trigger's thread with --thread anchored
-	// on the exact trigger comment id from this task.
+	// on the exact trigger comment id from this task, bounded to --tail 30.
 	for _, want := range []string{
 		"--thread " + triggerID,
-		"multica issue comment list " + issueID + " --thread " + triggerID + " --output json",
-		// --recent fallback at the documented default N=20.
+		"--tail 30",
+		"multica issue comment list " + issueID + " --thread " + triggerID + " --tail 30 --output json",
+		// Reply cursor walks older replies inside the same thread.
+		"Next reply cursor:",
+		"--before-id <reply-id>",
+		// --recent fallback at the documented default N=20 for cross-thread context.
 		"multica issue comment list " + issueID + " --recent 20 --output json",
 		// Cursor walks via the stderr line the CLI emits, not invented flags.
-		"Next thread cursor:",
+		"Next thread cursor",
 		"--before",
 		"--before-id",
-		// --since is still available and combinable.
+		// --since is still available and combinable (now scoped to the
+		// post-MUL-2421 mode names).
 		"--since",
-		"may combine with `--thread` or `--recent`",
+		"may combine with `--thread --tail` or `--recent`",
 		// Explicit pushback on the legacy full-dump recipe so the model has
 		// no reason to fall back to it on long issues.
 		"Avoid the unfiltered",
@@ -2864,8 +2869,10 @@ func TestInjectRuntimeConfigCommentTriggerThreadFirstReads(t *testing.T) {
 	// single discovery point for non-workflow CLI use cases).
 	for _, want := range []string{
 		"[--thread <comment-id>",
-		"--recent N [--before <ts> --before-id <root-id>]",
-		"Next thread cursor:",
+		"--tail N",
+		"--recent N",
+		"Next reply cursor",
+		"Next thread cursor",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Available Commands core line missing %q\n---\n%s", want, s)
@@ -2875,6 +2882,11 @@ func TestInjectRuntimeConfigCommentTriggerThreadFirstReads(t *testing.T) {
 	// The legacy step-2 phrasing this PR replaces must not regress.
 	if strings.Contains(s, "read the conversation (returns all comments, capped server-side at 2000)") {
 		t.Errorf("comment-triggered Workflow still carries the legacy full-dump phrasing\n---\n%s", s)
+	}
+	// The pre-MUL-2421 unbounded `--thread` recipe (no --tail) is also a
+	// regression target: it dumps the entire thread on long threads.
+	if strings.Contains(s, "multica issue comment list "+issueID+" --thread "+triggerID+" --output json") {
+		t.Errorf("comment-triggered Workflow regressed to unbounded --thread recipe (no --tail) — long threads will overflow context\n---\n%s", s)
 	}
 }
 
