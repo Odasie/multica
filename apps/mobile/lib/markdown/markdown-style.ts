@@ -20,22 +20,8 @@
  * code incident.
  */
 import { useMemo } from "react";
-import { Platform } from "react-native";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
-
-/**
- * Monospace font family for inline code. enriched-markdown's default is
- * `''` (inherit) on native — so without this override, inline code on
- * iOS/Android renders in the same proportional font as the surrounding
- * paragraph, losing its only remaining visual identification once we
- * remove the chip background.
- */
-const MONO_FONT = Platform.select({
-  ios: "Menlo",
-  android: "monospace",
-  default: "monospace",
-});
 
 /**
  * Typography scale — Apple HIG-calibrated, one tier below shadcn web.
@@ -46,10 +32,19 @@ const MD_FONT = {
   h1: 20,
   h2: 18,
   h3: 16,
-  h4: 14,
+  // h4 = 15 (was 14, same as body) — give h4 a real visual step over body
+  // beyond just fontWeight. h5 stays at 14 so it can read as "bold body"
+  // when authors use it for inline emphasis on a list section.
+  h4: 15,
   h5: 14,
-  h6: 12,
-  codeBlock: 13,
+  // h6 = 13 (was 12) + foreground (was mutedForeground) — the prior config
+  // rendered h6 as "small gray text" indistinguishable from a caption.
+  h6: 13,
+  // Code block font size — must match the in-house `CodeBlock` component's
+  // `text-sm` (= 14). The earlier 13 created a visible size mismatch between
+  // top-level fenced code (rendered by CodeBlock @ 14) and list-nested code
+  // (rendered by enriched via this style @ 13).
+  codeBlock: 14,
 } as const;
 
 const MD_LINE = {
@@ -78,9 +73,9 @@ const MD_LINE = {
   h1: 28,
   h2: 24,
   h3: 22,
-  h4: 20,
+  h4: 22,
   h5: 20,
-  h6: 18,
+  h6: 19,
 } as const;
 
 const MD_GAP = {
@@ -153,7 +148,7 @@ export function useMarkdownStyle() {
         fontSize: MD_FONT.h6,
         lineHeight: MD_LINE.h6,
         fontWeight: "600" as const,
-        color: t.mutedForeground,
+        color: t.foreground,
         marginTop: MD_GAP.headingTopSmall,
         marginBottom: MD_GAP.headingBottomSmall,
       },
@@ -165,6 +160,10 @@ export function useMarkdownStyle() {
         color: t.foreground,
       },
       em: {
+        // STYLES.md confirms enriched adds italic by default; we set it
+        // explicitly for parity with `strong` (which explicitly sets
+        // fontWeight: "bold").
+        fontStyle: "italic" as const,
         color: t.foreground,
       },
       strikethrough: {
@@ -177,42 +176,55 @@ export function useMarkdownStyle() {
         color: t.brand,
         underline: true,
       },
-      // Inline code — monospace font + subtle surface-2 chip + foreground
-       // text. Matches GitHub mobile / Slack / Notion / Discord / Apple
-       // Notes inline-code rendering.
-       //
-       // History:
-       //   - 2026-05-19 (a):  switched to `transparent` bg + `t.brand`
-       //     color as a workaround for enriched-markdown upstream issue
-       //     #255 (hardcoded internal padding renders a top-heavy chip
-       //     when bg is non-transparent — top:bottom padding ~4:1).
-       //   - 2026-05-19 (b):  REVERTED. Refactoring UI #1 — "use color
-       //     semantically, not decoratively" — `t.brand` is the link
-       //     color (and the WS-/iOS-wide blue-link convention), so
-       //     tinting code blue was confusing users into tapping it as
-       //     if it were a link. The padding artifact is the lesser
-       //     evil: it's a few pixels of asymmetry on a subtle chip,
-       //     not a semantic miscue.
-       //
-       // Why this looks acceptable now (vs the earlier attempt):
-       //   - Earlier chip used `t.muted` (L 96.1%) on a `bg-secondary`
-       //     parent (L 96.1%) — same color, so the chip needed all the
-       //     contrast it could get; the top-heavy padding stood out.
-       //   - Current chip uses `t.surface2` (L 90%) on a `bg-surface-1`
-       //     parent (L 98%) — 8% L step, chip is clearly framed but
-       //     temperate, padding asymmetry is hardly noticeable.
-       //
-       // borderColor matches bg so the library's default outline
-       // (enriched ships a pink `#F8D7DA` border that renders harshly
-       // on dark) collapses into the chip fill.
-       //
-       // Revisit: if upstream #255 ever ships a padding control, drop
-       // borderRadius / padding fields here to get pixel-perfect chip.
+      // Inline code — monospace + muted-foreground tint, NO background chip.
+      //
+      // Why no background: on iOS, NSAttributedString draws
+      // NSBackgroundColorAttributeName as a rectangle spanning the full
+      // line-box height (24pt for our CJK-tuned body leading). PingFang
+      // SC places the baseline at ~75-80% of the line-box, so monospaced
+      // glyphs sit low inside that rectangle, leaving ~11pt empty at the
+      // top vs ~6pt at the bottom — a visible 2:1 asymmetry in CJK
+      // paragraphs. This is a platform-level constraint, not a library
+      // bug: the library's STYLES.md exposes only fontFamily / fontSize /
+      // color / backgroundColor / borderColor for inline code — no
+      // padding, lineHeight, or baselineOffset knob. Confirmed 2026-05-21
+      // (researcher brief): zero open PRs / forks / prereleases touching
+      // inline-code vertical geometry; upstream issue #255 has no
+      // maintainer response since 2026-04-20. The only real fixes are at
+      // the native layer (custom NSLayoutManager.drawBackground override
+      // or TextKit 2 NSTextLayoutManager.enumerateTextSegments(.highlight))
+      // which would require forking the library — not worth the perpetual
+      // patch-rebase cost for a polish issue.
+      //
+      // Visual identification stays strong without the chip: monospace
+      // font + muted-foreground tint matches Apple Notes / iA Writer.
+      //
+      // Color choice — mutedForeground (NOT brand):
+      //   - mutedForeground is a neutral gray, reads as "subdued prose".
+      //   - brand is reserved for links; tinting code blue confused users
+      //     into tapping it as if it were a link (tried 2026-05-19, then
+      //     reverted same day for this reason).
+      //
+      // fontFamily intentionally NOT set: enriched-markdown's default is
+      // the platform system monospace (SF Mono on iOS, monospace on
+      // Android), which has a larger visual x-height than the previously-
+      // explicit "Menlo" override.
+      //
+      // Revisit when:
+      //   - upstream #255 ships a paddingVertical / lineHeight knob, OR
+      //   - we contribute the TextKit 2 fix upstream (the right hook is
+      //     NSTextLayoutManager.enumerateTextSegments(in:type:.highlight:))
+      // Either way, switch back to a tinted-chip style for cross-platform
+      // visual parity with web/desktop.
       code: {
-        color: t.foreground,
-        backgroundColor: t.surface2,
-        borderColor: t.surface2,
-        fontFamily: MONO_FONT,
+        color: t.mutedForeground,
+        backgroundColor: "transparent",
+        borderColor: "transparent",
+        // 15 (was 14) — monospaced glyphs have smaller cap-height than
+        // PingFang SC at the same point size; bumping +1 brings them
+        // visually level with surrounding CJK text. Standard practice in
+        // Apple Notes / Notion / GitHub Mobile inline code rendering.
+        fontSize: 15,
       },
       // Block code — bigger box, surface-2 background (one tonal tier
        // above secondary so the box stays visible when the markdown
@@ -232,15 +244,20 @@ export function useMarkdownStyle() {
         borderRadius: 8,
         marginBottom: MD_GAP.paragraph,
       },
-      // Blockquote — subtle left bar in border tone. `color` is REQUIRED:
-      // enriched's default is a hardcoded #4B5563 mid-gray that disappears
-      // on dark backgrounds.
+      // Blockquote — `color` is REQUIRED: enriched's default is a hardcoded
+      // #4B5563 mid-gray that disappears on dark backgrounds.
+      //
+      // borderWidth: 3 (was 2) — iOS quote bars in Apple Notes / Linear /
+      // Things are 3-4pt thick. 2pt was too thin to register as a visual
+      // accent. Whether enriched draws this as a 3pt left bar or as a 3pt
+      // full-frame border depends on the library schema (STYLES.md doesn't
+      // distinguish); needs simulator verification — see TODO below.
       blockquote: {
         color: t.mutedForeground,
         fontSize: MD_FONT.body,
         lineHeight: MD_LINE.body,
         borderColor: t.border,
-        borderWidth: 2,
+        borderWidth: 3,
         backgroundColor: "transparent",
         marginBottom: MD_GAP.paragraph,
       },
@@ -283,7 +300,9 @@ export function useMarkdownStyle() {
         fontSize: MD_FONT.body,
         lineHeight: MD_LINE.body,
         borderColor: t.border,
-        borderRadius: 6,
+        // borderRadius: 8 (was 6) — aligns with codeBlock and image (both 8).
+        // No reason for table to be the odd one out.
+        borderRadius: 8,
         headerBackgroundColor: t.surface2,
         headerTextColor: t.foreground,
         // Transparent rows let the page background show through — works in
@@ -293,9 +312,20 @@ export function useMarkdownStyle() {
         rowOddBackgroundColor: "transparent",
         cellPaddingHorizontal: 10,
         cellPaddingVertical: 6,
+        // Was missing — every other block-level element sets marginBottom
+        // (paragraph/codeBlock/blockquote/image/math all 12). Without this
+        // the table sits flush against the following paragraph.
+        marginBottom: MD_GAP.paragraph,
       },
+      // Horizontal rule. `color` alone is not enough — without explicit
+      // vertical margin the divider sits flush against neighbouring blocks
+      // and reads as a sub-pixel line rather than a section separator.
+      // marginTop/marginBottom = 16 matches MD_GAP.headingTopLarge so the
+      // rule feels like a paragraph-level boundary.
       thematicBreak: {
         color: t.border,
+        marginTop: 16,
+        marginBottom: 16,
       },
       // LaTeX math (free with this engine — was V3 deferred under the walker).
       math: {

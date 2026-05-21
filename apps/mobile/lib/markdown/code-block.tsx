@@ -177,9 +177,16 @@ function CodeBlockHeader({ code, lang }: Props) {
   return (
     <View className="flex-row items-center justify-between mb-1">
       {lang ? (
-        <Text className={CODE_BLOCK_LANG_LABEL_CLASS}>{lang}</Text>
+        // flex-1 + mr-2 + numberOfLines guarantees the copy button never gets
+        // pushed off-screen by a long language alias (e.g. `typescript-react-native`).
+        <Text
+          className={`${CODE_BLOCK_LANG_LABEL_CLASS} flex-1 mr-2`}
+          numberOfLines={1}
+        >
+          {lang}
+        </Text>
       ) : (
-        <View />
+        <View className="flex-1" />
       )}
       <Pressable
         onPress={onCopy}

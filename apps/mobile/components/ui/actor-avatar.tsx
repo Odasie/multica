@@ -18,19 +18,21 @@
  */
 import { Image, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useColorScheme } from "nativewind";
 import { Text } from "@/components/ui/text";
 import { cn } from "@/lib/utils";
 import { useActorLookup, getInitials } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { PresenceDot } from "@/components/ui/presence-dot";
+import { THEME } from "@/lib/theme";
 
 // `system` actors are server-side automation (state changes triggered by the
 // platform itself, not a member or an agent). InboxItem.actor_type carries
 // this third value (packages/core/types/inbox.ts:28). `squad` is a third
-// assignee polymorph (packages/core/types/issue.ts IssueAssigneeType) that
-// mobile doesn't yet have a list query for — render a generic group glyph so
-// squad-assigned issues from web don't disappear or render as blank circles.
+// assignee polymorph (packages/core/types/issue.ts IssueAssigneeType) — when
+// a squad has an avatar_url we render it; otherwise fall back to a generic
+// group glyph so squad-assigned issues from web never render blank.
 interface Props {
   type: "member" | "agent" | "system" | "squad" | null | undefined;
   id: string | null | undefined;
@@ -65,14 +67,48 @@ function BareAvatar({
   size: number;
 }) {
   const { getName, getAvatarUrl } = useActorLookup();
+  const { colorScheme } = useColorScheme();
+  // Ionicons takes a hex string, not a className — go through THEME so the
+  // glyph follows light/dark instead of locking to a single hardcoded zinc.
+  const iconColor =
+    colorScheme === "dark"
+      ? THEME.dark.mutedForeground
+      : THEME.light.mutedForeground;
+
+  // Squad gets a soft-square tile (matches web actor-avatar.tsx:42 which uses
+  // rounded-md) so a group never reads as a single person at a glance.
+  // Everyone else stays round.
+  const radius = type === "squad" ? Math.round(size * 0.22) : size / 2;
+
+  // URL lookup runs BEFORE the squad/system icon fallbacks so a squad with
+  // an avatar_url renders its image instead of the generic group glyph.
+  // Squad.avatar_url exists (packages/core/types/squad.ts) and useActorLookup
+  // already returns it — the previous early-return for type==="squad" meant
+  // that value was silently dropped.
+  // Only treat a URL as renderable if it actually looks like one — RN <Image>
+  // can crash native-side on malformed sources (empty string, plain "foo",
+  // etc.). Cheap regex; falsy / bad input falls through to the icon fallback.
+  const rawUrl = type && type !== "system" ? getAvatarUrl(type, id) : null;
+  const url =
+    rawUrl && /^(https?:|data:|file:|asset:)/.test(rawUrl) ? rawUrl : null;
+
+  if (url) {
+    return (
+      <Image
+        source={{ uri: url }}
+        style={{ width: size, height: size, borderRadius: radius }}
+        className="bg-muted"
+      />
+    );
+  }
 
   if (type === "system") {
     return (
       <View
-        style={{ width: size, height: size, borderRadius: size / 2 }}
+        style={{ width: size, height: size, borderRadius: radius }}
         className="items-center justify-center bg-muted"
       >
-        <Ionicons name="cog" size={Math.round(size * 0.55)} color="#71717a" />
+        <Ionicons name="cog" size={Math.round(size * 0.55)} color={iconColor} />
       </View>
     );
   }
@@ -80,31 +116,19 @@ function BareAvatar({
   if (type === "squad") {
     return (
       <View
-        style={{ width: size, height: size, borderRadius: size / 2 }}
+        style={{ width: size, height: size, borderRadius: radius }}
         className="items-center justify-center bg-muted"
       >
-        <Ionicons name="people" size={Math.round(size * 0.55)} color="#71717a" />
+        <Ionicons name="people" size={Math.round(size * 0.55)} color={iconColor} />
       </View>
     );
   }
 
   const name = getName(type, id);
-  const url = getAvatarUrl(type, id);
-
-  if (url) {
-    return (
-      <Image
-        source={{ uri: url }}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
-        className="bg-muted"
-      />
-    );
-  }
-
   const isAgent = type === "agent";
   return (
     <View
-      style={{ width: size, height: size, borderRadius: size / 2 }}
+      style={{ width: size, height: size, borderRadius: radius }}
       className={cn(
         "items-center justify-center",
         isAgent ? "bg-brand/15" : "bg-muted",

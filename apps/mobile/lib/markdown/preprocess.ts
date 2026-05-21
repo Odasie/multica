@@ -37,6 +37,31 @@ function preprocessFileCards(input: string): string {
 }
 
 /**
+ * Add GFM strikethrough markers around the content of checked task list items
+ * so they render with `~~text~~` styling — matching Linear / Notion / Apple
+ * Reminders / Things 3, where a checked item is visually crossed out.
+ *
+ * GFM itself does not specify that checked items SHOULD be struck through;
+ * enriched-markdown's task-list renderer only changes the checkbox glyph and
+ * (via `checkedTextColor`) dims the text. Without the strikethrough the
+ * "done" state reads weakly, and users who expect the platform pattern from
+ * other task apps assume the checkbox didn't take effect.
+ *
+ * Idempotent: skips lines whose body is already wrapped in `~~ ... ~~`.
+ * Conservative regex — only matches `- [x]` / `* [x]` / `+ [x]` at the start
+ * of a line (allowing leading whitespace), case-insensitive on the `x`.
+ */
+const TASK_DONE_RE = /^(\s*[-*+]\s+\[[xX]\]\s+)(.+)$/gm;
+
+function preprocessTaskListStrikethrough(input: string): string {
+  return input.replace(TASK_DONE_RE, (match, prefix, body) => {
+    const trimmed = body.trim();
+    if (trimmed.startsWith("~~") && trimmed.endsWith("~~")) return match;
+    return `${prefix}~~${body}~~`;
+  });
+}
+
+/**
  * Strip embedded HTML before marked sees it. Mobile cannot do what web does
  * (rehype-raw + sanitize → render real <br> / <sub> / <details>) — RN has
  * no inline HTML. Without this pass, users see literal `<br>` tags in the
@@ -63,7 +88,7 @@ function stripHtml(input: string): string {
 
 export function preprocessMobileMarkdown(input: string): string {
   if (!input) return "";
-  return preprocessFileCards(
-    preprocessMentionShortcodes(stripHtml(input)),
+  return preprocessTaskListStrikethrough(
+    preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
   );
 }

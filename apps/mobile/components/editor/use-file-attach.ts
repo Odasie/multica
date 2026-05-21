@@ -23,6 +23,12 @@ import * as DocumentPicker from "expo-document-picker";
 import { api, MAX_FILE_SIZE, type FileAsset } from "@/data/api";
 
 export interface FileAttachResult {
+  /** Attachment id from the server. Callers MUST carry this to the mutation
+   *  that creates / updates the comment, so the backend can re-parent the
+   *  attachment from "issue-scoped" to "comment-scoped" (otherwise the
+   *  attachment lives at the issue level forever and never cascades on
+   *  comment delete). */
+  id: string;
   url: string;
   filename: string;
 }
@@ -54,7 +60,11 @@ export function useFileAttach() {
       setUploading(true);
       try {
         const attachment = await api.uploadFile(asset, ctx);
-        return { url: attachment.url, filename: attachment.filename };
+        return {
+          id: attachment.id,
+          url: attachment.url,
+          filename: attachment.filename,
+        };
       } catch (err) {
         Alert.alert(
           "Upload failed",

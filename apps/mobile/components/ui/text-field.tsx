@@ -7,16 +7,29 @@
  *   font metrics.
  * - `includeFontPadding` / `textAlignVertical` are Android-only; iOS no-op,
  *   kept for when Android lands.
+ * - Focus state is tracked manually because NativeWind's `focus:` variant
+ *   on TextInput is unreliable across SDK upgrades.
  */
+import { useState } from "react";
 import { TextInput, type TextInputProps } from "react-native";
 import { cn } from "@/lib/utils";
 import { MOBILE_PLACEHOLDER_COLOR } from "./input-tokens";
 
 export interface TextFieldProps extends TextInputProps {
   className?: string;
+  invalid?: boolean;
 }
 
-export function TextField({ className, style, ...rest }: TextFieldProps) {
+export function TextField({
+  className,
+  style,
+  invalid,
+  onFocus,
+  onBlur,
+  ...rest
+}: TextFieldProps) {
+  const [focused, setFocused] = useState(false);
+
   return (
     <TextInput
       placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
@@ -24,8 +37,21 @@ export function TextField({ className, style, ...rest }: TextFieldProps) {
         { fontSize: 14, includeFontPadding: false, textAlignVertical: "center" },
         style,
       ]}
+      onFocus={(e) => {
+        setFocused(true);
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setFocused(false);
+        onBlur?.(e);
+      }}
       className={cn(
-        "bg-secondary/50 rounded-md px-3 h-10 text-foreground",
+        "rounded-md px-3 h-10 text-foreground border",
+        invalid
+          ? "bg-destructive/10 border-destructive/60"
+          : focused
+            ? "bg-secondary border-ring"
+            : "bg-secondary/50 border-transparent",
         className,
       )}
       {...rest}
