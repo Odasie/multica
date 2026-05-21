@@ -9,11 +9,13 @@
  * (`new-issue-picker/status.tsx`, which writes via useNewIssueDraftStore).
  */
 import { Pressable, ScrollView, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useColorScheme } from "nativewind";
 import type { IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
-import { cn } from "@/lib/utils";
+import { THEME } from "@/lib/theme";
 
 const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
 
@@ -23,6 +25,10 @@ interface Props {
 }
 
 export function StatusPickerBody({ value, onChange }: Props) {
+  const { colorScheme } = useColorScheme();
+  const checkColor =
+    colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
+
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
       <View className="px-4 pt-3 pb-2">
@@ -35,17 +41,14 @@ export function StatusPickerBody({ value, onChange }: Props) {
             <Pressable
               key={status}
               onPress={() => onChange(status)}
-              className={cn(
-                "flex-row items-center gap-3 rounded-lg px-3 py-3 active:bg-secondary",
-                selected && "bg-secondary",
-              )}
+              className="flex-row items-center gap-3 rounded-lg px-3 py-3 active:bg-secondary"
             >
               <StatusIcon status={status} size={18} />
               <Text className="flex-1 text-base text-foreground">
                 {STATUS_LABEL[status]}
               </Text>
               {selected ? (
-                <Text className="text-sm text-muted-foreground">✓</Text>
+                <Ionicons name="checkmark" size={20} color={checkColor} />
               ) : null}
             </Pressable>
           );

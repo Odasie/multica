@@ -3,11 +3,13 @@
  * enum values. See status-picker-body.tsx for the split rationale.
  */
 import { Pressable, ScrollView, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useColorScheme } from "nativewind";
 import type { IssuePriority } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { PRIORITY_LABEL } from "@/lib/issue-status";
-import { cn } from "@/lib/utils";
+import { THEME } from "@/lib/theme";
 
 // Display order: severity descending (urgent → none).
 const PRIORITY_OPTIONS: IssuePriority[] = [
@@ -24,6 +26,10 @@ interface Props {
 }
 
 export function PriorityPickerBody({ value, onChange }: Props) {
+  const { colorScheme } = useColorScheme();
+  const checkColor =
+    colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
+
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
       <View className="px-4 pt-3 pb-2">
@@ -36,17 +42,14 @@ export function PriorityPickerBody({ value, onChange }: Props) {
             <Pressable
               key={v}
               onPress={() => onChange(v)}
-              className={cn(
-                "flex-row items-center gap-3 rounded-lg px-3 py-3 active:bg-secondary",
-                selected && "bg-secondary",
-              )}
+              className="flex-row items-center gap-3 rounded-lg px-3 py-3 active:bg-secondary"
             >
               <PriorityIcon priority={v} size={16} />
               <Text className="flex-1 text-base text-foreground">
                 {PRIORITY_LABEL[v]}
               </Text>
               {selected ? (
-                <Text className="text-sm text-muted-foreground">✓</Text>
+                <Ionicons name="checkmark" size={20} color={checkColor} />
               ) : null}
             </Pressable>
           );

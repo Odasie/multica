@@ -1,142 +1,117 @@
 /**
- * Pure picker body for an issue's project — single-select. See
- * status-picker-body.tsx for the split rationale.
- *
- * Phase 1 does not support inline project creation; mobile users who want a
- * new project create it on web.
+ * Pure picker body for an issue's project — single-select. Mirrors the
+ * assignee picker pattern: header + search bar are the iOS native nav
+ * header (registered in `app/(app)/[workspace]/_layout.tsx`); the route
+ * wires `headerSearchBarOptions.onChangeText` to a local `query` state
+ * via `useNativeSearchBar` and passes it in as `query`. Body is a pure
+ * FlatList — no chrome.
  */
-import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
+import { useMemo } from "react";
+import { FlatList, Pressable, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import { useColorScheme } from "nativewind";
 import type { Project } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ProjectIcon } from "@/components/ui/project-icon";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
-import { TextField } from "@/components/ui/text-field";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { cn } from "@/lib/utils";
+import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
+import { THEME } from "@/lib/theme";
+
+type Row = { kind: "none" } | { kind: "project"; project: Project };
 
 interface Props {
   value: Project | null;
+  query: string;
   onChange: (next: Project | null) => void;
 }
 
-export function ProjectPickerBody({ value, onChange }: Props) {
+export function ProjectPickerBody({ value, query, onChange }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const { data: projects, isLoading } = useQuery(projectListOptions(wsId));
-  const [query, setQuery] = useState("");
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const listRef = useScrollToTopOnChange(query);
+  const { colorScheme } = useColorScheme();
+  const checkColor =
+    colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
 
-  const filtered = useMemo(() => {
+  const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
-    const all = projects ?? [];
-    const sorted = [...all].sort((a, b) => a.title.localeCompare(b.title));
-    if (!q) return sorted;
-    return sorted.filter((p) => p.title.toLowerCase().includes(q));
-  }, [projects, query]);
+    const matchName = (n: string) => !q || n.toLowerCase().includes(q);
+    const projectRows: Row[] = [...projects]
+      .filter((p) => matchName(p.title))
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .map((p) => ({ kind: "project" as const, project: p }));
+
+    if (q) return projectRows;
+
+    // Pin selected project to the top (below "No project"). Apple HIG
+    // doesn't require this — product UX choice that mirrors assignee.
+    const selected = projectRows.find(
+      (r) => r.kind === "project" && r.project.id === value?.id,
+    );
+    return [
+      { kind: "none" },
+      ...(selected ? [selected] : []),
+      ...projectRows.filter(
+        (r) => !(r.kind === "project" && r.project.id === value?.id),
+      ),
+    ];
+  }, [projects, query, value]);
+
+  const isSelected = (row: Row) => {
+    if (row.kind === "none") return value === null;
+    return value !== null && row.project.id === value.id;
+  };
 
   return (
-    <View className="flex-1">
-      <View className="px-4 pt-3 pb-2">
-        <Text className="text-lg font-semibold text-foreground">Project</Text>
-      </View>
-      <View className="px-4 pb-2 border-b border-border">
-        <TextField
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search projects"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </View>
-      {isLoading ? (
-        <View className="px-3 py-8 items-center">
-          <ActivityIndicator />
-        </View>
-      ) : (
-        <FlatList
-          data={filtered}
-          className="flex-1"
-          keyExtractor={(item) => item.id}
-          keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets
-          ListHeaderComponent={
-            <NoProjectRow
-              checked={value === null}
-              onPress={() => onChange(null)}
-            />
+    <FlatList
+      ref={listRef}
+      data={rows}
+      className="flex-1"
+      keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
+      contentInsetAdjustmentBehavior="automatic"
+      keyExtractor={(row) =>
+        row.kind === "none" ? "none" : `p:${row.project.id}`
+      }
+      renderItem={({ item }) => (
+        <Pressable
+          onPress={() =>
+            item.kind === "none" ? onChange(null) : onChange(item.project)
           }
-          renderItem={({ item }) => (
-            <ProjectRow
-              project={item}
-              checked={item.id === value?.id}
-              onPress={() => onChange(item)}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
+        >
+          {item.kind === "none" ? (
+            <Ionicons
+              name="close-circle-outline"
+              size={28}
+              color={MOBILE_PLACEHOLDER_COLOR}
             />
+          ) : (
+            <ProjectIcon icon={item.project.icon} size="md" />
           )}
-          ListEmptyComponent={
-            <View className="px-3 py-6 items-center">
-              <Text className="text-xs text-muted-foreground text-center">
-                {query
-                  ? "No matches."
-                  : "No projects in this workspace yet.\nCreate them on web."}
-              </Text>
-            </View>
-          }
-        />
+          <Text
+            className="flex-1 text-base text-foreground"
+            numberOfLines={1}
+          >
+            {item.kind === "none" ? "No project" : item.project.title}
+          </Text>
+          {isSelected(item) ? (
+            <Ionicons name="checkmark" size={20} color={checkColor} />
+          ) : null}
+        </Pressable>
       )}
-    </View>
-  );
-}
-
-function NoProjectRow({
-  checked,
-  onPress,
-}: {
-  checked: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className={cn(
-        "flex-row items-center gap-3 px-3 py-2.5 border-b border-border active:bg-secondary",
-        checked && "bg-secondary",
-      )}
-    >
-      <Ionicons
-        name="close-circle-outline"
-        size={16}
-        color={MOBILE_PLACEHOLDER_COLOR}
-      />
-      <Text className="flex-1 text-sm text-muted-foreground">No project</Text>
-      {checked ? <Text className="text-xs text-muted-foreground">✓</Text> : null}
-    </Pressable>
-  );
-}
-
-function ProjectRow({
-  project,
-  checked,
-  onPress,
-}: {
-  project: Project;
-  checked: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className={cn(
-        "flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary",
-        checked && "bg-secondary",
-      )}
-    >
-      <ProjectIcon icon={project.icon} size="md" />
-      <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-        {project.title}
-      </Text>
-      {checked ? <Text className="text-xs text-muted-foreground">✓</Text> : null}
-    </Pressable>
+      ListEmptyComponent={
+        <View className="px-3 py-8 items-center">
+          <Text className="text-sm text-muted-foreground text-center">
+            {query
+              ? "No matches."
+              : "No projects in this workspace yet.\nCreate them on web."}
+          </Text>
+        </View>
+      }
+    />
   );
 }

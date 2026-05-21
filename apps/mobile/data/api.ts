@@ -22,11 +22,13 @@ import type {
   ChatSession,
   Comment,
   CreateIssueRequest,
+  CreateLabelRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
   InboxItem,
   Issue,
   IssueLabelsResponse,
+  Label,
   IssueReaction,
   ListIssuesParams,
   ListIssuesResponse,
@@ -812,6 +814,17 @@ class ApiClient {
       EMPTY_LIST_LABELS_RESPONSE,
       { endpoint: "GET /api/labels" },
     );
+  }
+
+  // Create a new label and return it. Response is consumed by the
+  // create-and-attach flow in label picker, so raw `this.fetch<Label>` is
+  // used — same convention as createProject (cache rollback on failure is
+  // preferable to a parseWithFallback fallback that would mask server errors).
+  async createLabel(body: CreateLabelRequest): Promise<Label> {
+    return this.fetch<Label>("/api/labels", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   async attachLabel(
