@@ -104,13 +104,15 @@ func systemCommentOn(t *testing.T, issueID string) (content, authorIDStr string,
 	return
 }
 
-// TestChildDoneNotifiesParent — the happy path. A child transitioning from a
-// non-done status into `done` while its parent is open must produce exactly
-// one top-level platform-generated comment on the parent. The comment must
-// reference the child by its workspace-specific identifier (NOT a hardcoded
-// `MUL-` prefix — that was the bug PR #2918 review called out) and must not
-// carry an `@mention` link to any member/agent/squad (those would re-trigger
-// the parent's assignee, which is the noise this change removed).
+// TestChildDoneNotifiesParent — the happy path for an unassigned parent. A
+// child transitioning from a non-done status into `done` while its parent is
+// open must produce exactly one top-level platform-generated comment on the
+// parent. The comment must reference the child by its workspace-specific
+// identifier (NOT a hardcoded `MUL-` prefix — that was the bug PR #2918
+// review called out). When the parent has no assignee, the body must NOT
+// carry any agent/member/squad mention either; the assignee-mention is the
+// only mention we ever inject (see MUL-2538 Option C — covered separately
+// in TestChildDoneMentionsParentAssignee_* below).
 func TestChildDoneNotifiesParent(t *testing.T) {
 	fx := newChildDoneFixture(t, "in_progress")
 
@@ -140,15 +142,14 @@ func TestChildDoneNotifiesParent(t *testing.T) {
 		t.Errorf("comment must not hardcode MUL- prefix, got: %s", content)
 	}
 
-	// The comment must contain the safe issue mention but NOT any
-	// agent/member/squad mention (those would re-trigger the parent's
-	// assignee).
+	// The comment must contain the safe issue mention. With no parent
+	// assignee, none of the routing mentions should appear either.
 	if !strings.Contains(content, "mention://issue/"+fx.child.ID) {
 		t.Errorf("expected mention://issue/<child-id> link in comment, got: %s", content)
 	}
 	for _, banned := range []string{"mention://agent/", "mention://member/", "mention://squad/"} {
 		if strings.Contains(content, banned) {
-			t.Errorf("comment must not include %q mention (auto-mention side effect), got: %s", banned, content)
+			t.Errorf("parent has no assignee but comment included %q mention, got: %s", banned, content)
 		}
 	}
 }
@@ -237,5 +238,188 @@ func TestChildDoneSkippedWhenNoParent(t *testing.T) {
 
 	if got := countSystemCommentsOn(t, orphan.ID); got != 0 {
 		t.Errorf("orphan must not receive a self-notification, got %d system comments", got)
+	}
+}
+
+// setIssueAssigneeDirect bypasses UpdateIssue (and its assignment trigger
+// side effects) by writing to the assignee columns directly. The child-done
+// notification helper reads the parent row through GetIssue at fire time,
+// so a direct UPDATE is enough to drive the dispatch under each assignee
+// type without queuing a parallel agent task at setup.
+func setIssueAssigneeDirect(t *testing.T, issueID, assigneeType, assigneeID string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE issue SET assignee_type = $2, assignee_id = $3 WHERE id = $1`,
+		issueID, assigneeType, assigneeID,
+	); err != nil {
+		t.Fatalf("set parent assignee: %v", err)
+	}
+}
+
+func parentSystemCommentContent(t *testing.T, issueID string) string {
+	t.Helper()
+	if got := countSystemCommentsOn(t, issueID); got != 1 {
+		t.Fatalf("expected exactly 1 system comment on parent, got %d", got)
+	}
+	content, _, _, _ := systemCommentOn(t, issueID)
+	return content
+}
+
+func countPendingTasksForAgent(t *testing.T, issueID, agentID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_task_queue
+		   WHERE issue_id = $1 AND agent_id = $2
+		     AND status IN ('queued', 'dispatched', 'running')`,
+		issueID, agentID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	return n
+}
+
+func countInboxItems(t *testing.T, recipientUserID, issueID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM inbox_item
+		   WHERE recipient_id = $1 AND issue_id = $2`,
+		recipientUserID, issueID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count inbox items: %v", err)
+	}
+	return n
+}
+
+// TestChildDoneMentionsParentAssignee_Agent verifies the MUL-2538 Option C
+// happy path for an agent parent assignee: the system comment carries a
+// `mention://agent/<id>` link AND a real mention-style task is enqueued on
+// the parent. The trigger fires through TaskService.EnqueueTaskForMention,
+// so the dedupe + readiness checks match the @-mention path users already
+// rely on.
+func TestChildDoneMentionsParentAssignee_Agent(t *testing.T) {
+	fx := newChildDoneFixture(t, "in_progress")
+
+	var agentID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT id FROM agent WHERE workspace_id = $1 AND name = $2`,
+		testWorkspaceID, "Handler Test Agent",
+	).Scan(&agentID); err != nil {
+		t.Fatalf("locate test agent: %v", err)
+	}
+	setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM agent_task_queue WHERE issue_id = $1`, fx.parent.ID)
+	})
+
+	updateChildStatus(t, fx.child.ID, "done")
+
+	content := parentSystemCommentContent(t, fx.parent.ID)
+	wantMention := "mention://agent/" + agentID
+	if !strings.Contains(content, wantMention) {
+		t.Errorf("expected %q in system comment, got: %s", wantMention, content)
+	}
+	if got := countPendingTasksForAgent(t, fx.parent.ID, agentID); got != 1 {
+		t.Errorf("expected 1 pending task for parent agent, got %d", got)
+	}
+}
+
+// TestChildDoneMentionsParentAssignee_Member verifies the member branch:
+// the system comment carries a `mention://member/<member-id>` link and an
+// inbox row of type 'mentioned' is created for the member's user_id (NOT
+// the member_id — inbox.recipient_id is the underlying user).
+func TestChildDoneMentionsParentAssignee_Member(t *testing.T) {
+	fx := newChildDoneFixture(t, "in_progress")
+
+	var memberID, userID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT id, user_id FROM member WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&memberID, &userID); err != nil {
+		t.Fatalf("locate workspace member: %v", err)
+	}
+	setIssueAssigneeDirect(t, fx.parent.ID, "member", memberID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM inbox_item WHERE issue_id = $1`, fx.parent.ID)
+	})
+
+	updateChildStatus(t, fx.child.ID, "done")
+
+	content := parentSystemCommentContent(t, fx.parent.ID)
+	wantMention := "mention://member/" + memberID
+	if !strings.Contains(content, wantMention) {
+		t.Errorf("expected %q in system comment, got: %s", wantMention, content)
+	}
+	if got := countInboxItems(t, userID, fx.parent.ID); got != 1 {
+		t.Errorf("expected 1 inbox row for parent member assignee, got %d", got)
+	}
+}
+
+// TestChildDoneMentionsParentAssignee_Squad verifies the squad branch: the
+// system comment carries a `mention://squad/<id>` link and the squad
+// leader receives a leader-role task. Reuses the squad fixture helper from
+// squad_comment_trigger_test.go.
+func TestChildDoneMentionsParentAssignee_Squad(t *testing.T) {
+	fx := newChildDoneFixture(t, "in_progress")
+	sq := newSquadCommentTriggerFixture(t)
+
+	setIssueAssigneeDirect(t, fx.parent.ID, "squad", sq.SquadID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM agent_task_queue WHERE issue_id = $1`, fx.parent.ID)
+	})
+
+	updateChildStatus(t, fx.child.ID, "done")
+
+	content := parentSystemCommentContent(t, fx.parent.ID)
+	wantMention := "mention://squad/" + sq.SquadID
+	if !strings.Contains(content, wantMention) {
+		t.Errorf("expected %q in system comment, got: %s", wantMention, content)
+	}
+	if got := countPendingTasksForAgent(t, fx.parent.ID, sq.LeaderID); got != 1 {
+		t.Errorf("expected 1 pending leader task for parent squad, got %d", got)
+	}
+}
+
+// TestChildDoneSelfTriggerGuard_SameAgent — when the parent assignee is
+// the same agent that owns the child, the comment still records the
+// completion (so the timeline tells the full story) but no new task is
+// enqueued. Without this guard the agent immediately re-runs on the
+// parent and can post another child, looping.
+func TestChildDoneSelfTriggerGuard_SameAgent(t *testing.T) {
+	fx := newChildDoneFixture(t, "in_progress")
+
+	var agentID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT id FROM agent WHERE workspace_id = $1 AND name = $2`,
+		testWorkspaceID, "Handler Test Agent",
+	).Scan(&agentID); err != nil {
+		t.Fatalf("locate test agent: %v", err)
+	}
+	// Both child and parent assigned to the same agent. Setting the child
+	// assignee via direct SQL avoids the assignment-trigger side effect
+	// that would otherwise queue an unrelated task on the child.
+	setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM agent_task_queue WHERE issue_id IN ($1, $2)`,
+			fx.parent.ID, fx.child.ID)
+	})
+
+	updateChildStatus(t, fx.child.ID, "done")
+
+	// The comment should still be created (the human user reading the
+	// timeline still benefits from seeing that the child finished). The
+	// task enqueue is what gets skipped.
+	content := parentSystemCommentContent(t, fx.parent.ID)
+	if !strings.Contains(content, "mention://agent/"+agentID) {
+		t.Errorf("expected parent-assignee mention in system comment, got: %s", content)
+	}
+	if got := countPendingTasksForAgent(t, fx.parent.ID, agentID); got != 0 {
+		t.Errorf("expected 0 pending tasks on parent (self-trigger guard), got %d", got)
 	}
 }
