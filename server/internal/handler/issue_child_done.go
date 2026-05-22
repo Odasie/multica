@@ -207,12 +207,32 @@ func sanitizeMentionLabel(name string) string {
 // author_type='system'), so this is the single place where the platform
 // applies loop and idempotency guards for the child-done notification.
 //
+// Side-effect semantics (intentionally narrower than a normal @mention):
+//   - agent parent: one EnqueueTaskForMention on the parent assignee, same
+//     trigger surface as a real @-mention so dedupe and readiness checks
+//     match what users already rely on.
+//   - squad parent: one EnqueueTaskForSquadLeader on the squad LEADER only.
+//     Unlike a human @squad mention, this does NOT fan out to squad members
+//     — child-done is a coordination signal, the leader decides whether
+//     and how to wake the rest of the squad. Documented here so reviewers
+//     don't read "system mention" as inheriting the full member fan-out.
+//   - notification_preference is not consulted: this is a platform routing
+//     signal targeted at the assignee that already owns the parent, not a
+//     general notification. Per-user mute settings are evaluated by the
+//     downstream agent_task / inbox pipeline once the task is dispatched.
+//   - notification_listeners.go short-circuits on author_type='system', so
+//     subscriber emails and member-inbox rows from smuggled mentions in the
+//     child title are inert — only the explicit dispatch below runs.
+//
 // Guards applied here:
 //   - No-op when the parent has no assignee row.
-//   - Loop guard: skip when the parent assignee is the same agent that
-//     "owns" the child. Without this an agent that drives both child and
-//     parent immediately re-runs on the parent and can post another
-//     child, looping.
+//   - Loop guard: skip when the agent that effectively "owns" the child
+//     (its agent assignee, or the leader of its squad assignee) is the same
+//     agent the parent would trigger (the parent agent itself, or the
+//     parent squad's leader). Without this an agent that drives both child
+//     and parent immediately re-runs on the parent and can post another
+//     child, looping — including the cross-squad case where two different
+//     squads share a leader.
 //   - Idempotency: HasPendingTaskForIssueAndAgent dedupes rapid-fire enqueues
 //     for the same parent (e.g. two children finishing back-to-back).
 //   - Readiness: archived agents / missing runtimes are silently skipped
@@ -234,7 +254,8 @@ func (h *Handler) dispatchParentAssigneeTrigger(ctx context.Context, parent, chi
 // agent assignee, applying the self-trigger guard documented on
 // dispatchParentAssigneeTrigger.
 func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent, child db.Issue, triggerCommentID pgtype.UUID) {
-	if childAssigneeIsAgent(child, parent.AssigneeID) {
+	if owner := h.effectiveChildAgentOwner(ctx, child); owner.Valid &&
+		uuidToString(owner) == uuidToString(parent.AssigneeID) {
 		return
 	}
 
@@ -263,9 +284,12 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent, child db.Is
 }
 
 // triggerChildDoneSquad enqueues a leader-role task for the parent's squad
-// assignee, applying the self-trigger guard against both the squad leader
-// (same-agent loop) and the case where the child was driven by the same
-// squad (the leader would just observe its own work).
+// assignee, applying the self-trigger guard against:
+//   - same squad on both sides (the leader already observed the child via
+//     its own coordination cycle), and
+//   - same effective leader on both sides — child agent == leader, or
+//     child squad's leader == this squad's leader (the cross-squad shared
+//     leader loop).
 func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent, child db.Issue, triggerCommentID pgtype.UUID) {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          parent.AssigneeID,
@@ -281,8 +305,10 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent, child db.Is
 	if childAssigneeIsSquad(child, parent.AssigneeID) {
 		return
 	}
-	// Same-agent loop: child driven by an agent who is also the leader.
-	if childAssigneeIsAgent(child, squad.LeaderID) {
+	// Shared-leader loop: child driven directly by the parent squad's leader,
+	// or by another squad whose leader is the same agent.
+	if owner := h.effectiveChildAgentOwner(ctx, child); owner.Valid &&
+		uuidToString(owner) == uuidToString(squad.LeaderID) {
 		return
 	}
 
@@ -308,11 +334,38 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent, child db.Is
 	}
 }
 
-func childAssigneeIsAgent(child db.Issue, agentID pgtype.UUID) bool {
-	if !child.AssigneeType.Valid || child.AssigneeType.String != "agent" || !child.AssigneeID.Valid {
-		return false
+// effectiveChildAgentOwner returns the agent identity that effectively
+// "owns" the child issue from the perspective of the child-done trigger:
+//
+//   - child agent assignee → that agent
+//   - child squad assignee → that squad's leader (the agent that would
+//     actually act on a leader task and is the entry point for any squad
+//     work; a shared leader across two squads is the loop vector the
+//     callers above defend against)
+//   - anything else (member assignee, no assignee, missing squad row) →
+//     invalid UUID, signalling "no shared owner to compare against"
+//
+// Callers compare this against the agent they are about to trigger; equality
+// means we'd be enqueueing the same agent that just finished the child,
+// which is the loop case.
+func (h *Handler) effectiveChildAgentOwner(ctx context.Context, child db.Issue) pgtype.UUID {
+	if !child.AssigneeType.Valid || !child.AssigneeID.Valid {
+		return pgtype.UUID{}
 	}
-	return uuidToString(child.AssigneeID) == uuidToString(agentID)
+	switch child.AssigneeType.String {
+	case "agent":
+		return child.AssigneeID
+	case "squad":
+		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          child.AssigneeID,
+			WorkspaceID: child.WorkspaceID,
+		})
+		if err != nil {
+			return pgtype.UUID{}
+		}
+		return squad.LeaderID
+	}
+	return pgtype.UUID{}
 }
 
 func childAssigneeIsSquad(child db.Issue, squadID pgtype.UUID) bool {
