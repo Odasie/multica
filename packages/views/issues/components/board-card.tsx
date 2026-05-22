@@ -109,7 +109,7 @@ export const BoardCardContent = memo(function BoardCardContent({
       {/* Row 1: Identifier + agent activity indicator (top-right) */}
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">{issue.identifier}</p>
-        <IssueAgentActivityIndicator issueId={issue.id} size={18} />
+        <IssueAgentActivityIndicator issueId={issue.id} />
       </div>
 
       {/* Row 2: Title */}

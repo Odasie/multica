@@ -13,52 +13,61 @@ import type { AgentTask } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
 import { AgentActivityHoverContent } from "../../agents/components/agent-activity-hover-content";
+import { useT } from "../../i18n";
 
 interface IssueAgentActivityIndicatorProps {
   issueId: string;
+  // Avatar size in px. Kept very small — this is a corner-of-card cue,
+  // not a primary control. Default 12 reads as a dot at typical board
+  // densities while still showing the agent's face on hover-zoom.
   size?: number;
 }
 
 /**
- * Small "is there an agent working on this issue right now" badge — shown
+ * Small "is there an agent working on this issue right now" badge shown
  * in the top-right of board cards and right after the identifier in list
  * rows. Derives state from the workspace-wide agent task snapshot:
  *
- *   - has ≥1 running task  → avatar stack, full opacity
- *   - 0 running, ≥1 queued → avatar stack, half opacity (drops opacity
- *                              instead of swapping icons to keep agent
- *                              identity visible)
+ *   - has ≥1 running task  → tiny avatar stack + shimmering "Working"
+ *   - 0 running, ≥1 queued → half-opacity stack + muted "Queued"
  *   - nothing               → return null (no chrome, no placeholder)
  *
- * Hover opens AgentActivityHoverContent which lists every active task
- * (running + queued) with a per-task status dot + duration. No links to
- * issue detail — the user clicks the card itself for that.
+ * The shimmer reuses chat's `animate-chat-text-shimmer` utility (defined
+ * in packages/ui/styles/base.css). Earlier iterations layered a brand
+ * ring + opacity pulse around the avatars; both read as nervous on a
+ * dense board. Moving the "alive" signal onto the label keeps the
+ * avatars themselves still and lets the cue ride a piece of text the
+ * user can already read.
  *
- * The component re-renders on every snapshot invalidation (WS task:*
- * events drive it via use-realtime-sync). 30s staleTime is the offline
- * fallback only.
+ * Hover opens AgentActivityHoverContent which lists every active task
+ * with status dot + duration. No link rows — the card itself is the
+ * navigation target for issue detail.
+ *
+ * Re-renders on every snapshot invalidation (WS task:* events drive it
+ * via use-realtime-sync). 30s staleTime is the offline fallback only.
  */
 export function IssueAgentActivityIndicator({
   issueId,
-  size = 18,
+  size = 12,
 }: IssueAgentActivityIndicatorProps) {
+  const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const { data: snapshot = [] } = useQuery(agentTaskSnapshotOptions(wsId));
 
   const { runningTasks, queuedTasks, agentIds, opacity } = useMemo(() => {
     const running: AgentTask[] = [];
     const queued: AgentTask[] = [];
-    for (const t of snapshot) {
-      if (t.issue_id !== issueId) continue;
-      if (t.status === "running") running.push(t);
-      else if (t.status === "queued" || t.status === "dispatched")
-        queued.push(t);
+    for (const task of snapshot) {
+      if (task.issue_id !== issueId) continue;
+      if (task.status === "running") running.push(task);
+      else if (task.status === "queued" || task.status === "dispatched")
+        queued.push(task);
       // Terminal statuses are intentionally ignored — they belong on the
       // issue history, not the live indicator.
     }
-    // Stack heads: prefer running. If 0 running, fall back to queued. This
-    // keeps each visual state visually distinct (queued-only is dimmer)
-    // while always offering a face to hover.
+    // Stack heads: prefer running. If 0 running, fall back to queued.
+    // Each case is visually distinct (running gets shimmer, queued gets
+    // muted text) so the indicator always offers a face to hover.
     const primary = running.length > 0 ? running : queued;
     const uniqueAgents = [...new Set(primary.map((t) => t.agent_id))];
     return {
@@ -71,34 +80,33 @@ export function IssueAgentActivityIndicator({
 
   if (agentIds.length === 0) return null;
   const hoverTasks = [...runningTasks, ...queuedTasks];
-
-  // When at least one task is actually running, wrap the stack in a soft
-  // brand ring + slow pulse so the card reads "something is happening here"
-  // at a glance — a single static avatar is too easy to miss in a dense
-  // board. Queued-only (half-opacity) state already signals "waiting" via
-  // the lighter avatars; no extra pulse there.
   const isRunning = opacity === "full";
 
   return (
     <HoverCard>
       <HoverCardTrigger
         render={
-          <span
-            className={cn(
-              "inline-flex shrink-0 items-center rounded-full",
-              // Soft "alive" breath: a visible brand ring at /70 paired
-              // with Tailwind's default 2s pulse. Earlier attempts at
-              // long cycles or near-transparent rings made the cue
-              // disappear; keeping the base opaque enough to read and
-              // the cadence at the system default gives a gentle
-              // breath without strobing.
-              isRunning &&
-                "ring-1 ring-brand/70 animate-pulse motion-reduce:animate-none",
-            )}
-          />
+          <span className="inline-flex shrink-0 items-center gap-1" />
         }
       >
-        <AgentAvatarStack agentIds={agentIds} size={size} opacity={opacity} />
+        <AgentAvatarStack
+          agentIds={agentIds}
+          size={size}
+          opacity={opacity}
+          max={3}
+        />
+        <span
+          className={cn(
+            "text-[10px] leading-none",
+            isRunning
+              ? "animate-chat-text-shimmer"
+              : "text-muted-foreground",
+          )}
+        >
+          {isRunning
+            ? t(($) => $.agent_activity.status_running)
+            : t(($) => $.agent_activity.status_queued)}
+        </span>
       </HoverCardTrigger>
       <HoverCardContent align="end" className="w-72">
         <AgentActivityHoverContent tasks={hoverTasks} />

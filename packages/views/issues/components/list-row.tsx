@@ -83,7 +83,7 @@ export const ListRow = memo(function ListRow({
           <span className="w-16 shrink-0 text-xs text-muted-foreground">
             {issue.identifier}
           </span>
-          <IssueAgentActivityIndicator issueId={issue.id} size={16} />
+          <IssueAgentActivityIndicator issueId={issue.id} />
 
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="truncate">{issue.title}</span>
