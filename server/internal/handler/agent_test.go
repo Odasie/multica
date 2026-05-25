@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -727,7 +728,12 @@ func TestUpdateAgent_RedactsMcpConfigForAgentActor(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.McpConfig != nil {
+	// The response contract keeps `mcp_config` always-present so clients
+	// can distinguish "no config" vs "redacted" via the companion flag.
+	// `json.RawMessage` of a JSON null decodes to the literal bytes
+	// `null`, not Go nil — so check for "no secret-bearing content"
+	// rather than `!= nil`.
+	if len(resp.McpConfig) > 0 && !bytes.Equal(bytes.TrimSpace(resp.McpConfig), []byte("null")) {
 		t.Errorf("UpdateAgent response leaked mcp_config to agent actor: %s", string(resp.McpConfig))
 	}
 	if !resp.McpConfigRedacted {
