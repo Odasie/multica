@@ -34,7 +34,7 @@ export const useCaseText: Record<Locale, UseCaseText> = {
   zh: {
     indexTitle: "案例",
     indexSubtitle: "看看团队怎么用 Multica 把人和 agent 一起组织起来。",
-    indexMetadataTitle: "案例 | Multica",
+    indexMetadataTitle: "案例",
     indexMetadataDescription:
       "看看团队怎么用 Multica 把人和 agent 一起组织起来。",
     cardReadMore: "阅读 →",
@@ -44,7 +44,7 @@ export const useCaseText: Record<Locale, UseCaseText> = {
     indexTitle: "Use cases",
     indexSubtitle:
       "See how teams organize people and agents together with Multica.",
-    indexMetadataTitle: "Use cases | Multica",
+    indexMetadataTitle: "Use cases",
     indexMetadataDescription:
       "See how teams put people and agents to work together with Multica.",
     cardReadMore: "Read →",
