@@ -220,26 +220,29 @@ INSERT INTO issue_pull_request (
     $1, $2, $4, $5, $3
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
-    close_intent = issue_pull_request.close_intent OR EXCLUDED.close_intent
+    close_intent = CASE
+        WHEN $6 THEN issue_pull_request.close_intent
+        ELSE EXCLUDED.close_intent
+    END
 `
 
 type LinkIssueToPullRequestParams struct {
-	IssueID       pgtype.UUID `json:"issue_id"`
-	PullRequestID pgtype.UUID `json:"pull_request_id"`
-	CloseIntent   bool        `json:"close_intent"`
-	LinkedByType  pgtype.Text `json:"linked_by_type"`
-	LinkedByID    pgtype.UUID `json:"linked_by_id"`
+	IssueID             pgtype.UUID `json:"issue_id"`
+	PullRequestID       pgtype.UUID `json:"pull_request_id"`
+	CloseIntent         bool        `json:"close_intent"`
+	LinkedByType        pgtype.Text `json:"linked_by_type"`
+	LinkedByID          pgtype.UUID `json:"linked_by_id"`
+	PreserveCloseIntent bool        `json:"preserve_close_intent"`
 }
 
 // =====================
 // Issue ↔ Pull Request link
 // =====================
-// close_intent is monotonic: once a PR has been linked with closing intent
-// (a "Closes/Fixes/Resolves" keyword in title or body), a later webhook
-// re-fire for the same PR without the keyword (e.g. body was edited to
-// drop the keyword after merge) must not clear the flag. The OR-merge in
-// DO UPDATE keeps the strongest declaration that has ever applied to this
-// link.
+// close_intent reflects the PR's explicit close declaration at the moment
+// the webhook is allowed to update that intent. Open/edit/merge webhooks use
+// the current title/body parse result so authors can remove a closing keyword
+// before merge. Post-terminal edits can opt into preserving the stored value,
+// keeping the merge-time decision stable.
 func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPullRequestParams) error {
 	_, err := q.db.Exec(ctx, linkIssueToPullRequest,
 		arg.IssueID,
@@ -247,6 +250,7 @@ func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPul
 		arg.CloseIntent,
 		arg.LinkedByType,
 		arg.LinkedByID,
+		arg.PreserveCloseIntent,
 	)
 	return err
 }

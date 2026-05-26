@@ -196,19 +196,21 @@ WHERE EXCLUDED.updated_at >= github_pull_request_check_suite.updated_at;
 -- =====================
 
 -- name: LinkIssueToPullRequest :exec
--- close_intent is monotonic: once a PR has been linked with closing intent
--- (a "Closes/Fixes/Resolves" keyword in title or body), a later webhook
--- re-fire for the same PR without the keyword (e.g. body was edited to
--- drop the keyword after merge) must not clear the flag. The OR-merge in
--- DO UPDATE keeps the strongest declaration that has ever applied to this
--- link.
+-- close_intent reflects the PR's explicit close declaration at the moment
+-- the webhook is allowed to update that intent. Open/edit/merge webhooks use
+-- the current title/body parse result so authors can remove a closing keyword
+-- before merge. Post-terminal edits can opt into preserving the stored value,
+-- keeping the merge-time decision stable.
 INSERT INTO issue_pull_request (
     issue_id, pull_request_id, linked_by_type, linked_by_id, close_intent
 ) VALUES (
     $1, $2, sqlc.narg('linked_by_type'), sqlc.narg('linked_by_id'), $3
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
-    close_intent = issue_pull_request.close_intent OR EXCLUDED.close_intent;
+    close_intent = CASE
+        WHEN sqlc.arg('preserve_close_intent') THEN issue_pull_request.close_intent
+        ELSE EXCLUDED.close_intent
+    END;
 
 -- name: UnlinkIssueFromPullRequest :exec
 DELETE FROM issue_pull_request

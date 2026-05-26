@@ -88,8 +88,8 @@ type GitHubPullRequestResponse struct {
 }
 
 type GitHubConnectResponse struct {
-	URL       string `json:"url"`
-	Configured bool  `json:"configured"`
+	URL        string `json:"url"`
+	Configured bool   `json:"configured"`
 }
 
 func githubInstallationToResponse(i db.GithubInstallation) GitHubInstallationResponse {
@@ -648,7 +648,7 @@ type ghPullRequestPayload struct {
 			AvatarURL string `json:"avatar_url"`
 		} `json:"user"`
 	} `json:"pull_request"`
-	Changes *ghPRChanges `json:"changes"`
+	Changes    *ghPRChanges `json:"changes"`
 	Repository struct {
 		Name  string `json:"name"`
 		Owner struct {
@@ -682,27 +682,27 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
 	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
 	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
-		WorkspaceID:           inst.WorkspaceID,
-		InstallationID:        inst.InstallationID,
-		RepoOwner:             p.Repository.Owner.Login,
-		RepoName:              p.Repository.Name,
-		PrNumber:              p.PullRequest.Number,
-		Title:                 p.PullRequest.Title,
-		State:                 state,
-		HtmlUrl:               p.PullRequest.HTMLURL,
-		Branch:                ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
-		AuthorLogin:           ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
-		AuthorAvatarUrl:       ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
-		MergedAt:              parseGHTime(p.PullRequest.MergedAt),
-		ClosedAt:              parseGHTime(p.PullRequest.ClosedAt),
-		PrCreatedAt:           parseGHTimeRequired(p.PullRequest.CreatedAt),
-		PrUpdatedAt:           parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha:               p.PullRequest.Head.SHA,
-		MergeableState:        mergeable,
-		ClearMergeableState:   pgtype.Bool{Bool: clearMergeable, Valid: true},
-		Additions:             p.PullRequest.Additions,
-		Deletions:             p.PullRequest.Deletions,
-		ChangedFiles:          p.PullRequest.ChangedFiles,
+		WorkspaceID:         inst.WorkspaceID,
+		InstallationID:      inst.InstallationID,
+		RepoOwner:           p.Repository.Owner.Login,
+		RepoName:            p.Repository.Name,
+		PrNumber:            p.PullRequest.Number,
+		Title:               p.PullRequest.Title,
+		State:               state,
+		HtmlUrl:             p.PullRequest.HTMLURL,
+		Branch:              ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
+		AuthorLogin:         ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
+		AuthorAvatarUrl:     ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
+		MergedAt:            parseGHTime(p.PullRequest.MergedAt),
+		ClosedAt:            parseGHTime(p.PullRequest.ClosedAt),
+		PrCreatedAt:         parseGHTimeRequired(p.PullRequest.CreatedAt),
+		PrUpdatedAt:         parseGHTimeRequired(p.PullRequest.UpdatedAt),
+		HeadSha:             p.PullRequest.Head.SHA,
+		MergeableState:      mergeable,
+		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
+		Additions:           p.PullRequest.Additions,
+		Deletions:           p.PullRequest.Deletions,
+		ChangedFiles:        p.PullRequest.ChangedFiles,
 	})
 	if err != nil {
 		slog.Warn("github: upsert pr failed", "err", err)
@@ -736,6 +736,11 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 		for _, c := range extractClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body) {
 			closingIdents[c] = struct{}{}
 		}
+		// close_intent should follow the PR title/body while the PR is still
+		// editable before its terminal close event. Once GitHub has delivered
+		// a terminal event, later edit/synchronize webhooks must not rewrite
+		// the merge-time close decision.
+		preserveCloseIntent := p.Action != "closed" && (state == "merged" || state == "closed")
 		prefix := h.getIssuePrefix(ctx, inst.WorkspaceID)
 		// reevalIssues collects each issue whose link row we just touched so
 		// we can re-run the auto-advance gate against the persisted aggregate
@@ -753,12 +758,14 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 				continue
 			}
 			_, declared := closingIdents[id]
+			closeIntent := declared && !preserveCloseIntent
 			if err := h.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
-				IssueID:       issue.ID,
-				PullRequestID: pr.ID,
-				CloseIntent:   declared,
-				LinkedByType:  strToText("system"),
-				LinkedByID:    pgtype.UUID{},
+				IssueID:             issue.ID,
+				PullRequestID:       pr.ID,
+				CloseIntent:         closeIntent,
+				PreserveCloseIntent: preserveCloseIntent,
+				LinkedByType:        strToText("system"),
+				LinkedByID:          pgtype.UUID{},
 			}); err != nil {
 				slog.Warn("github: link failed", "err", err)
 				continue
@@ -801,7 +808,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	// Broadcast PR change to the workspace so any open issue detail page
 	// re-queries its PR list.
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
-		"pull_request": resp,
+		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
 }
