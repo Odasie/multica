@@ -276,7 +276,7 @@ export function ListView({
         isSettlingRef.current = false;
       });
     },
-    [issues, visibleStatuses, onMoveIssue, groupIds, groupMap, sortBy],
+    [issues, groups, onMoveIssue, groupIds, groupMap, sortBy],
   );
 
   const content = (
@@ -317,7 +317,7 @@ export function ListView({
 
   if (!dragEnabled) {
     return (
-      <div className="flex-1 min-h-0 overflow-y-auto p-2">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 pt-0">
         {content}
       </div>
     );
@@ -331,7 +331,7 @@ export function ListView({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex-1 min-h-0 overflow-y-auto p-2">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 pt-0">
         {content}
       </div>
 
@@ -399,7 +399,7 @@ function StatusAccordionItem({
   return (
     <Accordion.Item value={status} ref={dragEnabled ? setDroppableRef : undefined}>
       <Accordion.Header
-        className={`group/header sticky top-0 z-10 flex h-10 items-center rounded-lg bg-muted transition-colors hover:bg-accent before:content-[''] before:absolute before:-top-2 before:inset-x-0 before:h-2 before:bg-background before:-z-10 ${
+        className={`group/header sticky top-0 z-10 flex h-10 items-center rounded-lg bg-muted transition-colors hover:bg-accent ${
           isOver && !isExpanded
             ? "ring-2 ring-brand/25 bg-accent/15"
             : ""
