@@ -95,6 +95,19 @@ type IssueCreateOpts struct {
 // conflict (HTTP 409, Lark card, etc.).
 var ErrActiveDuplicate = errors.New("active duplicate issue exists")
 
+// ErrParentIssueNotFound signals that the supplied ParentIssueID does
+// not exist in the issue's workspace. The service refuses to create
+// orphaned or cross-workspace child issues; callers translate this into
+// their transport's 400 / Lark card error.
+var ErrParentIssueNotFound = errors.New("parent issue not found in this workspace")
+
+// ErrProjectNotFound signals that the supplied ProjectID does not exist
+// in the issue's workspace. Cross-workspace project IDs are rejected
+// here so every create entry (HTTP `POST /issues`, Lark `/issue`, future
+// MCP / API key callers) enforces the same workspace boundary without
+// having to remember it. Callers translate this into 400.
+var ErrProjectNotFound = errors.New("project not found in this workspace")
+
 // IssueCreateResult is the typed return from IssueService.Create.
 //
 //   - On the happy path: Issue is the new row, Attachments lists the
@@ -110,19 +123,23 @@ type IssueCreateResult struct {
 // Create runs the full issue-creation pipeline atomically end-to-end:
 //
 //  1. Begin transaction.
-//  2. Lock & check the duplicate guard.
-//  3. Increment the workspace issue counter.
-//  4. Insert the issue row (with optional origin stamping).
-//  5. Commit.
-//  6. Link any pre-uploaded attachments (post-commit, idempotent).
-//  7. Publish EventIssueCreated to the bus (payload via opts.BroadcastPayload).
-//  8. Capture the IssueCreated analytics event.
-//  9. Enqueue an agent task or trigger the squad leader when the issue is
-//     assigned and not in `backlog`.
+//  2. Resolve & validate parent / project belong to the same workspace.
+//  3. Lock & check the duplicate guard.
+//  4. Increment the workspace issue counter.
+//  5. Insert the issue row (with optional origin stamping).
+//  6. Commit.
+//  7. Link any pre-uploaded attachments (post-commit, idempotent).
+//  8. Publish EventIssueCreated to the bus (payload via opts.BroadcastPayload).
+//  9. Capture the IssueCreated analytics event.
+//  10. Enqueue an agent task or trigger the squad leader when the issue is
+//      assigned and not in `backlog`.
 //
-// Validation (title required, RFC3339 date format, assignee pair sanity,
-// parent existence) is the caller's responsibility — it depends on the
-// transport's error shape (HTTP 400, Lark card, etc.).
+// Validation that lives in the service (parent existence, project
+// workspace membership, parent → project back-fill) is enforced here so
+// every create entry — HTTP `POST /issues`, Lark `/issue`, future
+// MCP/API-key callers — shares the same workspace boundary semantics.
+// Caller-owned validation is limited to transport-shaped checks: title
+// required, RFC3339 date format, assignee pair sanity.
 func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -131,7 +148,37 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
 
-	duplicate, found, err := issueguard.LockAndFindActiveDuplicate(ctx, qtx, p.WorkspaceID, p.ProjectID, p.ParentIssueID, p.Title, p.AllowDuplicate)
+	// Resolve and validate parent / project before reading from the
+	// duplicate guard so a forged parent or project ID is rejected
+	// before we touch the issue counter. Both checks scope by
+	// WorkspaceID — there is no path from this service to a row in a
+	// foreign workspace.
+	projectID := p.ProjectID
+	if p.ParentIssueID.Valid {
+		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          p.ParentIssueID,
+			WorkspaceID: p.WorkspaceID,
+		})
+		if err != nil || !parent.ID.Valid {
+			return IssueCreateResult{}, ErrParentIssueNotFound
+		}
+		// Back-fill project from parent when the caller did not pin
+		// one explicitly. Matches the long-standing HTTP behavior: a
+		// sub-issue inherits its parent's project unless overridden.
+		if !projectID.Valid {
+			projectID = parent.ProjectID
+		}
+	}
+	if projectID.Valid {
+		if _, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+			ID:          projectID,
+			WorkspaceID: p.WorkspaceID,
+		}); err != nil {
+			return IssueCreateResult{}, ErrProjectNotFound
+		}
+	}
+
+	duplicate, found, err := issueguard.LockAndFindActiveDuplicate(ctx, qtx, p.WorkspaceID, projectID, p.ParentIssueID, p.Title, p.AllowDuplicate)
 	if err != nil {
 		return IssueCreateResult{}, fmt.Errorf("duplicate guard: %w", err)
 	}
@@ -162,7 +209,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			StartDate:     p.StartDate,
 			DueDate:       p.DueDate,
 			Number:        issueNumber,
-			ProjectID:     p.ProjectID,
+			ProjectID:     projectID,
 			OriginType:    p.OriginType,
 			OriginID:      p.OriginID,
 		})
@@ -182,7 +229,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			StartDate:     p.StartDate,
 			DueDate:       p.DueDate,
 			Number:        issueNumber,
-			ProjectID:     p.ProjectID,
+			ProjectID:     projectID,
 		})
 	}
 	if err != nil {

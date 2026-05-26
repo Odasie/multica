@@ -1934,19 +1934,11 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		parentIssueID = id
-		// Validate parent exists in the same workspace.
-		parent, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
-			ID:          parentIssueID,
-			WorkspaceID: wsUUID,
-		})
-		if err != nil || !parent.ID.Valid {
-			writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
-			return
-		}
-		if req.ProjectID == nil {
-			projectID = parent.ProjectID
-		}
 	}
+	// Cross-workspace parent / project existence is enforced inside
+	// IssueService.Create (atomically with the create), so every entry
+	// point — HTTP, Lark, future MCP — gets the same boundary check
+	// without duplicating the lookup here.
 
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
@@ -2064,6 +2056,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			"error": duplicateIssueMessage(existing),
 			"issue": existing,
 		})
+		return
+	}
+	if errors.Is(err, service.ErrParentIssueNotFound) {
+		writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
+		return
+	}
+	if errors.Is(err, service.ErrProjectNotFound) {
+		writeError(w, http.StatusBadRequest, "project not found in this workspace")
 		return
 	}
 	if err != nil {
