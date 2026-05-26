@@ -19,6 +19,7 @@ import {
   User,
   UserMinus,
   UserPen,
+  Waves,
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -994,6 +995,8 @@ export function IssueDisplayControls({
                       <Button variant="outline" size="sm" className="gap-1 text-muted-foreground">
                         {viewMode === "board" ? (
                           <Columns3 className="size-3.5" />
+                        ) : viewMode === "swimlane" ? (
+                          <Waves className="size-3.5" />
                         ) : viewMode === "gantt" && allowGantt ? (
                           <ChartGantt className="size-3.5" />
                         ) : (
@@ -1001,6 +1004,8 @@ export function IssueDisplayControls({
                         )}
                         {viewMode === "board"
                           ? t(($) => $.view.board)
+                          : viewMode === "swimlane"
+                          ? t(($) => $.view.swimlane)
                           : viewMode === "gantt" && allowGantt
                           ? t(($) => $.view.gantt)
                           : t(($) => $.view.list)}
@@ -1012,6 +1017,8 @@ export function IssueDisplayControls({
               <TooltipContent side="bottom">
                 {viewMode === "board"
                   ? t(($) => $.view.tooltip_board)
+                  : viewMode === "swimlane"
+                  ? t(($) => $.view.tooltip_swimlane)
                   : viewMode === "gantt" && allowGantt
                   ? t(($) => $.view.tooltip_gantt)
                   : t(($) => $.view.tooltip_list)}
@@ -1029,6 +1036,10 @@ export function IssueDisplayControls({
                 <DropdownMenuRadioItem value="list">
                   <List />
                   {t(($) => $.view.list)}
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="swimlane">
+                  <Waves />
+                  {t(($) => $.view.swimlane)}
                 </DropdownMenuRadioItem>
                 {allowGantt && (
                   <DropdownMenuRadioItem value="gantt">
