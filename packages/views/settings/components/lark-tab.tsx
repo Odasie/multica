@@ -29,7 +29,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { larkInstallationsOptions, larkKeys } from "@multica/core/lark";
-import { api } from "@multica/core/api";
+import { api, ApiError } from "@multica/core/api";
 import type { LarkInstallation, LarkInstallStatusResponse } from "@multica/core/types";
 import { useT } from "../../i18n";
 
@@ -242,12 +242,17 @@ function InstallationRow({
 // detail page. The Settings panel above is the management view; this
 // button is the entry point.
 //
-// The button hides itself when the device-flow install path is not
-// wired (install_supported == false on the listing endpoint). This is
-// the second half of the "don't expose a flow that's guaranteed to
-// fail" guarantee: even if a future view mistakenly mounts the button
-// while the server-side install path is unwired (stub APIClient, or
-// no MULTICA_LARK_SECRET_KEY), it stays invisible to users.
+// The button hides itself when either:
+//   (a) the device-flow install path is not wired on the server
+//       (install_supported == false on the listing endpoint), or
+//   (b) the current viewer is not a workspace owner/admin — the backend
+//       gates `POST /lark/install/begin` and the status poll on those
+//       roles (see server/cmd/server/router.go:478-487), and
+//       `canEditAgent` lets agent owners through even when they're not
+//       workspace admins, so the parent's `canEdit` gate alone would
+//       expose a CTA that's guaranteed to 403.
+// This is the "don't expose a flow that's guaranteed to fail"
+// guarantee — both halves matter.
 export function LarkAgentBindButton({
   agentId,
   agentName,
@@ -259,6 +264,7 @@ export function LarkAgentBindButton({
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
+  const user = useAuthStore((s) => s.user);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const { data: listing } = useQuery({
@@ -267,7 +273,15 @@ export function LarkAgentBindButton({
   });
   const installSupported = listing?.install_supported === true;
 
-  if (!installSupported) return null;
+  const { data: members = [] } = useQuery({
+    ...memberListOptions(wsId),
+    enabled: !!wsId,
+  });
+  const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
+  const canManage =
+    currentMember?.role === "owner" || currentMember?.role === "admin";
+
+  if (!installSupported || !canManage) return null;
 
   return (
     <>
@@ -406,10 +420,36 @@ function LarkInstallDialog({
         timer = setTimeout(poll, intervalMs);
       } catch (e) {
         if (cancelled) return;
-        // Transient errors (network blip) — schedule another poll
-        // rather than killing the session. The next backend status
-        // read will either confirm pending or surface the terminal
-        // error the polling goroutine recorded.
+        // Terminal HTTP states must NOT be retried — the session is
+        // gone or the caller has lost permission, and polling forever
+        // would trap the user on a stale QR with no error feedback.
+        // 404: server restarted, multi-instance routed elsewhere, or
+        //      the in-process GC swept the session. Treat as session
+        //      lost — user has to scan a fresh QR.
+        // 403: permission revoked mid-session (role downgrade, etc.).
+        //      The CTA gate prevents this on entry, but a role change
+        //      while the dialog is open would land here.
+        // 401: the global ApiClient interceptor handles re-auth, so
+        //      reaching the catch with 401 means re-auth itself
+        //      failed — treat as terminal so the user doesn't loop.
+        if (e instanceof ApiError) {
+          if (e.status === 404) {
+            setStatus("error");
+            setErrorReason("session_lost");
+            setErrorMessage(e.message);
+            return;
+          }
+          if (e.status === 403 || e.status === 401) {
+            setStatus("error");
+            setErrorReason("forbidden");
+            setErrorMessage(e.message);
+            return;
+          }
+        }
+        // Transient errors (network blip, 5xx) — schedule another
+        // poll rather than killing the session. The next backend
+        // status read will either confirm pending or surface the
+        // terminal error the polling goroutine recorded.
         timer = setTimeout(poll, intervalMs);
         // Surface the message as a non-blocking toast for diagnostics.
         toast.message(t(($) => $.lark.install_poll_retry), {
@@ -490,6 +530,10 @@ function LarkInstallDialog({
                       return t(($) => $.lark.install_error_conflict);
                     case "installer_bind_failed":
                       return t(($) => $.lark.install_error_installer_bind);
+                    case "session_lost":
+                      return t(($) => $.lark.install_error_session_lost);
+                    case "forbidden":
+                      return t(($) => $.lark.install_error_forbidden);
                     default:
                       return t(($) => $.lark.install_error_generic);
                   }

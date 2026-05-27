@@ -26,10 +26,11 @@
 //  9. Patcher (subscribes to task / chat-done events; keeps the
 //     per-task Lark interactive card in sync; throttled patches +
 //     final/error bypass)
-// 10. OAuthService (signed-state install URL + callback that exchanges
-//     the code via APIClient, writes through InstallationService, and
-//     auto-binds the installer via InstallerBinder so §2.1 "scan to
-//     bind, you're done" holds end-to-end)
+// 10. RegistrationService (RFC 8628 device-flow scan-to-install: opens
+//     a session against accounts.feishu.cn, polls in the background,
+//     and on success writes through InstallationService + auto-binds
+//     the installer via InstallerBinder so §2.1 "scan to bind, you're
+//     done" holds end-to-end)
 //
 // Architectural boundaries (frozen from Elon's 二审, MUL-2671 §4.8):
 //

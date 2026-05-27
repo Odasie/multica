@@ -11,8 +11,8 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// InstallationParams is the input shape both the manual-install HTTP
-// handler and the OAuth callback assemble into. The credentials are
+// InstallationParams is the input shape RegistrationService assembles
+// after a successful device-flow scan-to-install. The credentials are
 // supplied here as plaintext — encryption happens inside
 // InstallationService.Upsert via the supplied *secretbox.Box, so
 // callers never see (and therefore cannot leak) the ciphertext that

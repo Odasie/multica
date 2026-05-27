@@ -261,6 +261,8 @@
     "install_error_bot_info": "Authorized, but Multica couldn't fetch the Bot's identity. Try again.",
     "install_error_conflict": "Could not save the installation. Another bot may already be bound to this agent.",
     "install_error_installer_bind": "Installed the bot, but could not bind your Lark identity. Try again or contact support.",
+    "install_error_session_lost": "Install session expired or was lost. Scan again to start over.",
+    "install_error_forbidden": "You no longer have permission to install Lark Bots in this workspace. Ask a workspace admin to continue.",
     "install_error_generic": "Install failed. Try again."
   },
   "repositories": {

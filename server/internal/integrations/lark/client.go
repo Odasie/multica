@@ -112,7 +112,8 @@ var ErrAPIClientNotConfigured = errors.New("lark: API client not configured")
 // stubAPIClient is the default APIClient used when no production client
 // has been registered. It refuses every transport call with
 // ErrAPIClientNotConfigured so a misconfigured deployment fails loudly
-// instead of silently dropping cards / OAuth callbacks.
+// instead of silently dropping cards or device-flow registration
+// responses.
 //
 // We deliberately do NOT silently succeed: a stub that returned ""
 // message IDs would let the inbound dispatcher record bogus
@@ -124,8 +125,8 @@ type stubAPIClient struct {
 // NewStubAPIClient returns the default no-op APIClient. The hub
 // constructs one of these when no real implementation has been
 // supplied, so subsystems that depend on APIClient (outbound patcher,
-// OAuth callback) can still wire up; their first call surfaces a clear
-// error.
+// device-flow registration) can still wire up; their first call
+// surfaces a clear error.
 func NewStubAPIClient(log *slog.Logger) APIClient {
 	if log == nil {
 		log = slog.Default()

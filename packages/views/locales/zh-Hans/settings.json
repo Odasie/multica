@@ -261,6 +261,8 @@
     "install_error_bot_info": "授权完成，但 Multica 无法获取 Bot 身份信息，请重试。",
     "install_error_conflict": "未能保存安装信息：该智能体可能已绑定其他 Bot。",
     "install_error_installer_bind": "已安装 Bot，但未能绑定你的飞书身份。请重试或联系管理员。",
+    "install_error_session_lost": "安装会话已失效或丢失，请重新扫码。",
+    "install_error_forbidden": "你已没有在此工作区安装飞书 Bot 的权限，请联系工作区管理员。",
     "install_error_generic": "安装失败，请重试。"
   },
   "repositories": {

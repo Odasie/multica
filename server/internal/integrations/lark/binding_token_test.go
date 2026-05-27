@@ -14,8 +14,7 @@ import (
 // touching the database. DB-backed mint/redeem invariants (single use,
 // expiry) are covered by the DB CHECK on lark_binding_token plus the
 // ConsumeLarkBindingToken query, which require an integration test
-// against a real Postgres and are added in a follow-up alongside the
-// OAuth flow tests.
+// against a real Postgres and are added in a follow-up.
 
 func TestRandomTokenIsUnique(t *testing.T) {
 	seen := map[string]struct{}{}
