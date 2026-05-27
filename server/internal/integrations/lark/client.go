@@ -17,6 +17,14 @@ import (
 // already authenticated the installation row and decrypted its
 // app_secret. The client never reads `lark_installation` itself.
 type APIClient interface {
+	// IsConfigured reports whether this APIClient can actually reach
+	// Lark. The stub implementation returns false; the real Lark HTTP
+	// client (Phase-2 follow-up) returns true. UI surfaces (the
+	// Settings → Lark tab, the "Bind to Lark" agent-detail button)
+	// hide themselves when this returns false so users do not enter
+	// an OAuth flow that is guaranteed to fail at the exchange step.
+	IsConfigured() bool
+
 	// SendInteractiveCard posts an interactive card into a Lark chat
 	// and returns Lark's message_id for the card. The patcher persists
 	// this id in lark_outbound_card_message so subsequent patches can
@@ -125,6 +133,8 @@ func NewStubAPIClient(log *slog.Logger) APIClient {
 	}
 	return &stubAPIClient{log: log}
 }
+
+func (s *stubAPIClient) IsConfigured() bool { return false }
 
 func (s *stubAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	s.log.Warn("lark stub client: SendInteractiveCard called", "chat_id", string(p.ChatID))

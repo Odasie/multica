@@ -51,6 +51,12 @@ export function LarkTab() {
   });
   const installations = data?.installations ?? [];
   const configured = data?.configured === true;
+  // install_supported tracks whether a real Lark APIClient is wired
+  // server-side. When false, the OAuth callback would fail at the
+  // exchange step, so we hide install entry points and surface a
+  // "coming soon" notice in their place rather than send users into a
+  // broken flow. Existing installations remain manageable.
+  const installSupported = data?.install_supported === true;
 
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -89,6 +95,20 @@ export function LarkTab() {
               </code>{" "}
               {t(($) => $.lark.not_enabled_description_suffix)}{" "}
               {t(($) => $.lark.not_enabled_self_host_hint)}
+            </p>
+          </CardContent>
+        </Card>
+      ) : !installSupported && installations.length === 0 ? (
+        // Real APIClient is not wired yet. We deliberately do NOT
+        // direct users to the agent-detail "Bind" button because the
+        // OAuth callback would fail at the exchange step. Existing
+        // installations still render via the branch below; this only
+        // hides the empty-state CTA when there is nothing to manage.
+        <Card>
+          <CardContent className="space-y-2">
+            <p className="text-sm font-medium">{t(($) => $.lark.preview_title)}</p>
+            <p className="text-xs text-muted-foreground">
+              {t(($) => $.lark.preview_description)}
             </p>
           </CardContent>
         </Card>
@@ -211,6 +231,13 @@ function InstallationRow({
 // detail page. The Settings panel above is the management view; this
 // button is the entry point.
 //
+// The button hides itself when the workspace does not have a real
+// Lark APIClient wired (install_supported == false on the listing
+// endpoint). This is the second half of the "don't expose a flow
+// that's guaranteed to fail" guarantee: even if a future view
+// mistakenly mounts the button before the install surface is fully
+// wired, it stays invisible to users.
+//
 // Keeping it in the same file so a future contributor adding a Lark
 // surface (e.g. an inline "you have N bots" widget on the workspace
 // dashboard) finds the API client wiring next to the consumer.
@@ -226,6 +253,16 @@ export function LarkAgentBindButton({
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const [opening, setOpening] = useState(false);
+
+  // Cheap signal that decides whether the button is reachable for this
+  // workspace. The query is cached + WS-invalidated by larkKeys, so
+  // mounting this button on the agent detail page does not add new
+  // load — it shares the cache with the Settings tab.
+  const { data: listing } = useQuery({
+    ...larkInstallationsOptions(wsId),
+    enabled: !!wsId,
+  });
+  const installSupported = listing?.install_supported === true;
 
   async function handleClick() {
     if (opening) return;
@@ -246,6 +283,8 @@ export function LarkAgentBindButton({
       setOpening(false);
     }
   }
+
+  if (!installSupported) return null;
 
   return (
     <Button

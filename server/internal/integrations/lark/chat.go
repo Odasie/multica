@@ -67,12 +67,12 @@ type AppendUserMessageParams struct {
 }
 
 // AppendResult reports what AppendUserMessage decided.
+//
+// Dedup is enforced by the Dispatcher's top-level dedup gate before
+// AppendUserMessage runs, so a returned AppendResult always
+// represents a freshly-stored message. Callers may safely act on
+// IssueCommand without re-checking idempotency.
 type AppendResult struct {
-	// MessageStored is true when the message was newly written to
-	// chat_message. False indicates a dedup hit (idempotent replay);
-	// callers should not double-trigger downstream effects.
-	MessageStored bool
-
 	// IssueCommand is non-nil when the first non-empty line begins
 	// with `/issue`. The caller passes this to
 	// service.IssueService.Create.

@@ -9,21 +9,27 @@
 //     that rejects cross-user rebinds in-DB)
 //  4. ChatSessionService (channel-aware chat_session ensure / append
 //     with /issue command parsing)
-//  5. Dispatcher (inbound pipeline: installation route → group filter
-//     → identity check → ensure session → append + dedup → /issue
-//     → enqueue chat task; typed outcomes for offline / archived)
+//  5. Dispatcher (inbound pipeline: installation route → top-level
+//     message_id dedup → group filter → identity check → ensure
+//     session → append → /issue → enqueue chat task; typed outcomes
+//     for offline / archived; emit returns DispatchResult + error so
+//     the connector can post the matching Lark-side reply card)
 //  6. AuditLogger (lark_inbound_audit; deliberately no body column)
 //  7. APIClient interface + stub (transport surface for outbound;
 //     real Lark wire-protocol implementation lands in a follow-up
 //     behind this same interface)
 //  8. Hub (WS lease + per-installation supervisor goroutines with
-//     exponential backoff + jitter; EventConnector interface is the
-//     seam for the real wire protocol)
+//     exponential backoff + jitter; renewer cancels the connector's
+//     run ctx on lease loss to keep §4.4 ownership safe across
+//     replicas; EventConnector interface is the seam for the real
+//     wire protocol)
 //  9. Patcher (subscribes to task / chat-done events; keeps the
 //     per-task Lark interactive card in sync; throttled patches +
 //     final/error bypass)
 // 10. OAuthService (signed-state install URL + callback that exchanges
-//     the code via APIClient and writes through InstallationService)
+//     the code via APIClient, writes through InstallationService, and
+//     auto-binds the installer via InstallerBinder so §2.1 "scan to
+//     bind, you're done" holds end-to-end)
 //
 // Architectural boundaries (frozen from Elon's 二审, MUL-2671 §4.8):
 //

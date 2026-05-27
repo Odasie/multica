@@ -119,7 +119,14 @@ type Handler struct {
 	// only the new install start / callback endpoints short-circuit to
 	// 503 when LarkOAuth is nil.
 	LarkOAuth *lark.OAuthService
-	cfg       Config
+	// LarkAPIClient is the live transport that backs SendInteractiveCard,
+	// PatchInteractiveCard, SendBindingPromptCard, ExchangeOAuthCode.
+	// It is `lark.NewStubAPIClient(...)` until the real Lark HTTP client
+	// is wired (Phase-2 follow-up); the UI hides install entry points
+	// while IsConfigured()==false so users do not land in a flow that
+	// is guaranteed to fail at the exchange step.
+	LarkAPIClient lark.APIClient
+	cfg           Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

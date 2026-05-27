@@ -94,6 +94,30 @@ func (c OAuthConfig) Enabled() bool {
 	return c.AppID != "" && c.AppSecret != "" && c.RedirectURI != "" && c.StateSigningSecret != ""
 }
 
+// InstallerBinder is the narrow surface OAuthService needs to record
+// the installer's lark_user_binding row in the same business step as
+// the installation itself. The OAuth journey is "scan, authorize,
+// you're done" — the installer should NOT have to redeem a binding
+// token after the install completes. Without this step the first
+// inbound message from the installer would be dropped as
+// `unbound_user` (and the Bot would reply "you're not bound, click
+// here…" to the person who just clicked "authorize" 30 seconds ago).
+//
+// Implementations MUST be idempotent on (installation_id, lark_open_id):
+// a re-install by the same user should not error.
+type InstallerBinder interface {
+	BindInstaller(ctx context.Context, p InstallerBindParams) error
+}
+
+// InstallerBindParams carries the inputs InstallerBinder needs. Kept
+// as a struct so adding union_id (Phase 2) does not break callers.
+type InstallerBindParams struct {
+	WorkspaceID    pgtype.UUID
+	InstallationID pgtype.UUID
+	MulticaUserID  pgtype.UUID // the installer's Multica account
+	LarkOpenID     OpenID      // the installer's per-installation open_id
+}
+
 // OAuthService coordinates the install start / callback dance. It
 // holds no DB state of its own — the InstallationService still owns
 // every write to lark_installation; OAuthService is the
@@ -103,12 +127,16 @@ type OAuthService struct {
 	cfg          OAuthConfig
 	client       APIClient
 	installation *InstallationService
+	binder       InstallerBinder
 }
 
 // NewOAuthService constructs an OAuthService. cfg may be the zero
 // value — Enabled() will simply return false and StartInstall/Callback
-// will surface ErrOAuthNotConfigured.
-func NewOAuthService(cfg OAuthConfig, client APIClient, installation *InstallationService) (*OAuthService, error) {
+// will surface ErrOAuthNotConfigured. binder is required; the OAuth
+// install journey REQUIRES the installer to be auto-bound (see
+// InstallerBinder doc), so refusing to construct without one is the
+// safer default than allowing a silent regression.
+func NewOAuthService(cfg OAuthConfig, client APIClient, installation *InstallationService, binder InstallerBinder) (*OAuthService, error) {
 	cfg = cfg.withDefaults()
 	if client == nil {
 		return nil, errors.New("lark oauth: APIClient is required")
@@ -116,7 +144,10 @@ func NewOAuthService(cfg OAuthConfig, client APIClient, installation *Installati
 	if installation == nil {
 		return nil, errors.New("lark oauth: InstallationService is required")
 	}
-	return &OAuthService{cfg: cfg, client: client, installation: installation}, nil
+	if binder == nil {
+		return nil, errors.New("lark oauth: InstallerBinder is required")
+	}
+	return &OAuthService{cfg: cfg, client: client, installation: installation, binder: binder}, nil
 }
 
 // StartInstallParams carries the workspace + agent the install will
@@ -217,6 +248,25 @@ func (s *OAuthService) HandleCallback(ctx context.Context, p CallbackParams) (Ca
 	})
 	if err != nil {
 		return CallbackResult{}, fmt.Errorf("upsert installation: %w", err)
+	}
+
+	// Auto-bind the installer. Without this the installer's first
+	// inbound message would be dropped as `unbound_user` and they
+	// would be asked to "click here to bind" 30 seconds after they
+	// just clicked "authorize" — confusing, and breaks the §2.1
+	// install journey. Bind FAILURE is fatal because the user-facing
+	// promise of OAuth is "you're done"; a half-installed state is
+	// worse than no install (Upsert is idempotent on re-install, so
+	// the user can retry). validateExchangeResult above already
+	// rejected an empty InstallerOpenID, so we know it is present
+	// here.
+	if err := s.binder.BindInstaller(ctx, InstallerBindParams{
+		WorkspaceID:    binding.WorkspaceID,
+		InstallationID: inst.ID,
+		MulticaUserID:  binding.InitiatorID,
+		LarkOpenID:     exch.InstallerOpenID,
+	}); err != nil {
+		return CallbackResult{}, fmt.Errorf("bind installer: %w", err)
 	}
 
 	return CallbackResult{
@@ -331,6 +381,13 @@ func validateExchangeResult(r OAuthExchangeResult) error {
 		return ErrExchangeMissingAppSecret
 	case r.BotOpenID == "":
 		return ErrExchangeMissingBotOpenID
+	case r.InstallerOpenID == "":
+		// Installer auto-binding (see HandleCallback) requires the
+		// installer's per-installation open_id; without it we
+		// cannot honor the §2.1 "scan to bind, you're done"
+		// promise, so we fail fast BEFORE upserting the
+		// installation row.
+		return ErrExchangeMissingInstallerOpenID
 	}
 	return nil
 }
@@ -364,7 +421,8 @@ var ErrStateExpired = errors.New("lark oauth: state expired")
 // stubAPIClient returns ErrAPIClientNotConfigured before any of these
 // can fire; the real client should validate up-stream.
 var (
-	ErrExchangeMissingAppID     = errors.New("lark oauth: exchange response missing app_id")
-	ErrExchangeMissingAppSecret = errors.New("lark oauth: exchange response missing app_secret")
-	ErrExchangeMissingBotOpenID = errors.New("lark oauth: exchange response missing bot_open_id")
+	ErrExchangeMissingAppID            = errors.New("lark oauth: exchange response missing app_id")
+	ErrExchangeMissingAppSecret        = errors.New("lark oauth: exchange response missing app_secret")
+	ErrExchangeMissingBotOpenID        = errors.New("lark oauth: exchange response missing bot_open_id")
+	ErrExchangeMissingInstallerOpenID  = errors.New("lark oauth: exchange response missing installer open_id")
 )

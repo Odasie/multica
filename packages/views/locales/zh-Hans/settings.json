@@ -224,6 +224,8 @@
     "not_enabled_description_prefix": "需要在服务器上设置",
     "not_enabled_description_suffix": "才能启用飞书 Bot 绑定。",
     "not_enabled_self_host_hint": "自托管部署请参考项目 README。",
+    "preview_title": "飞书 Bot 安装即将上线",
+    "preview_description": "服务器已配置加密密钥，但本版本尚未接入真实的飞书 HTTP 客户端。后续版本启用传输层后，安装入口将在此展示。",
     "connected_bots": "已连接的 Bot",
     "loading": "加载中…",
     "empty_title": "暂无已绑定的 Bot",

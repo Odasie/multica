@@ -1,12 +1,37 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/integrations/lark"
 )
+
+// stubConfiguredAPIClient is the test seam that lets us simulate a
+// real Lark client being wired without dragging the transport in.
+// Its only behaviorally interesting method here is IsConfigured —
+// every other call returns ErrAPIClientNotConfigured (the test paths
+// that hit it would already be a misconfiguration).
+type stubConfiguredAPIClient struct{}
+
+func (stubConfiguredAPIClient) IsConfigured() bool { return true }
+func (stubConfiguredAPIClient) SendInteractiveCard(_ context.Context, _ lark.SendCardParams) (string, error) {
+	return "", lark.ErrAPIClientNotConfigured
+}
+func (stubConfiguredAPIClient) PatchInteractiveCard(_ context.Context, _ lark.PatchCardParams) error {
+	return lark.ErrAPIClientNotConfigured
+}
+func (stubConfiguredAPIClient) SendBindingPromptCard(_ context.Context, _ lark.BindingPromptParams) error {
+	return lark.ErrAPIClientNotConfigured
+}
+func (stubConfiguredAPIClient) ExchangeOAuthCode(_ context.Context, _ string, _ string) (lark.OAuthExchangeResult, error) {
+	return lark.OAuthExchangeResult{}, lark.ErrAPIClientNotConfigured
+}
 
 // Lark-handler unit tests focus on the no-config short-circuits —
 // verifying that a self-host deployment without MULTICA_LARK_SECRET_KEY
@@ -95,8 +120,9 @@ func TestListLarkInstallations_NotConfiguredReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Installations []any `json:"installations"`
-		Configured    bool  `json:"configured"`
+		Installations    []any `json:"installations"`
+		Configured       bool  `json:"configured"`
+		InstallSupported bool  `json:"install_supported"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -104,7 +130,82 @@ func TestListLarkInstallations_NotConfiguredReturnsEmpty(t *testing.T) {
 	if resp.Configured {
 		t.Fatalf("configured should be false when LarkInstallations is nil")
 	}
+	if resp.InstallSupported {
+		t.Fatalf("install_supported should be false when LarkInstallations is nil")
+	}
 	if len(resp.Installations) != 0 {
 		t.Fatalf("expected empty installations list, got %d", len(resp.Installations))
+	}
+}
+
+// TestStartLarkInstall_StubClientReportsNotConfigured pins the
+// front-half of the "no broken install flow" guarantee: even when
+// the at-rest key + OAuth env are set, the install-start endpoint
+// reports configured:false if the underlying APIClient is the stub.
+// Without this short-circuit the user would scan, authorize, and
+// get bounced back with `lark_error=internal_error` because the
+// OAuth exchange would surface ErrAPIClientNotConfigured.
+//
+// The matching front-end half is in lark-tab.tsx: the agent-detail
+// "Bind to Lark" button hides itself when install_supported==false.
+func TestStartLarkInstall_StubClientReportsNotConfigured(t *testing.T) {
+	stubLogger := slog.New(slog.NewTextHandler(httptest.NewRecorder(), nil))
+	// The stub returns IsConfigured()==false; the handler must
+	// short-circuit BEFORE invoking OAuth.StartInstall, so we
+	// can leave LarkOAuth nil here — if the handler tries to use
+	// it, we will see a panic instead of the expected JSON body.
+	h := &Handler{
+		LarkAPIClient: lark.NewStubAPIClient(stubLogger),
+	}
+	// LarkInstallations must be set to pass the 503 short-circuit at
+	// the top of the handler; assign a non-nil sentinel.
+	// Use the fact that we only need it != nil: a zero-value pointer
+	// crashes when its methods are called, but the IsConfigured()
+	// gate fires first so they never are.
+	h.LarkInstallations = &lark.InstallationService{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/install/start?agent_id=y", nil)
+	w := httptest.NewRecorder()
+	h.StartLarkInstall(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp StartLarkInstallResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Configured {
+		t.Fatalf("configured should be false when APIClient is the stub; got %+v", resp)
+	}
+	if resp.URL != "" {
+		t.Fatalf("URL should be empty when not configured; got %q", resp.URL)
+	}
+}
+
+// TestListLarkInstallations_StubClientReportsInstallNotSupported pins
+// the listing side of the same guarantee.
+func TestListLarkInstallations_StubClientReportsInstallNotSupported(t *testing.T) {
+	stubLogger := slog.New(slog.NewTextHandler(httptest.NewRecorder(), nil))
+	// LarkInstallations is nil to keep this a pure no-config test —
+	// when it's nil the handler returns the not-configured shape and
+	// install_supported must be false alongside configured.
+	h := &Handler{
+		LarkAPIClient: lark.NewStubAPIClient(stubLogger),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
+	w := httptest.NewRecorder()
+	h.ListLarkInstallations(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Configured       bool `json:"configured"`
+		InstallSupported bool `json:"install_supported"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InstallSupported {
+		t.Fatalf("install_supported must be false while only stub APIClient is wired")
 	}
 }

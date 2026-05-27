@@ -12,7 +12,30 @@ import (
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
+// fakeInstallerBinder records the BindInstaller calls so tests can
+// assert that the OAuth callback wired the installer auto-bind into
+// the install journey. Returning bindErr lets a test simulate
+// "installer's open_id is already claimed by someone else" or
+// "installer is not a workspace member" to confirm the OAuth callback
+// surfaces those failures correctly.
+type fakeInstallerBinder struct {
+	called  int
+	lastReq InstallerBindParams
+	bindErr error
+}
+
+func (f *fakeInstallerBinder) BindInstaller(_ context.Context, p InstallerBindParams) error {
+	f.called++
+	f.lastReq = p
+	return f.bindErr
+}
+
 func newOAuthService(t *testing.T, now func() time.Time, client APIClient) *OAuthService {
+	t.Helper()
+	return newOAuthServiceWithBinder(t, now, client, &fakeInstallerBinder{})
+}
+
+func newOAuthServiceWithBinder(t *testing.T, now func() time.Time, client APIClient, binder InstallerBinder) *OAuthService {
 	t.Helper()
 	box := mustTestBox(t)
 	inst, err := NewInstallationService(nil, box)
@@ -29,7 +52,7 @@ func newOAuthService(t *testing.T, now func() time.Time, client APIClient) *OAut
 		FrontendSuccessURL: "/settings?tab=lark",
 		Now:                now,
 	}
-	svc, err := NewOAuthService(cfg, client, inst)
+	svc, err := NewOAuthService(cfg, client, inst, binder)
 	if err != nil {
 		t.Fatalf("NewOAuthService: %v", err)
 	}
@@ -73,7 +96,7 @@ func TestOAuthDisabledWhenConfigMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallationService: %v", err)
 	}
-	svc, err := NewOAuthService(OAuthConfig{}, NewStubAPIClient(newDiscardLogger()), inst)
+	svc, err := NewOAuthService(OAuthConfig{}, NewStubAPIClient(newDiscardLogger()), inst, &fakeInstallerBinder{})
 	if err != nil {
 		t.Fatalf("NewOAuthService: %v", err)
 	}
@@ -147,6 +170,65 @@ func TestOAuthCallbackRejectsExpiredState(t *testing.T) {
 	}
 }
 
+// fakeOAuthAPIClient is a minimal APIClient that returns a canned
+// OAuthExchangeResult and refuses every other transport call. Used to
+// drive HandleCallback through to the installer-bind step without
+// dragging the real Lark HTTP wire protocol in.
+type fakeOAuthAPIClient struct {
+	exch OAuthExchangeResult
+	err  error
+}
+
+func (f *fakeOAuthAPIClient) IsConfigured() bool { return true }
+
+func (f *fakeOAuthAPIClient) SendInteractiveCard(_ context.Context, _ SendCardParams) (string, error) {
+	return "", ErrAPIClientNotConfigured
+}
+func (f *fakeOAuthAPIClient) PatchInteractiveCard(_ context.Context, _ PatchCardParams) error {
+	return ErrAPIClientNotConfigured
+}
+func (f *fakeOAuthAPIClient) SendBindingPromptCard(_ context.Context, _ BindingPromptParams) error {
+	return ErrAPIClientNotConfigured
+}
+func (f *fakeOAuthAPIClient) ExchangeOAuthCode(_ context.Context, _ string, _ string) (OAuthExchangeResult, error) {
+	return f.exch, f.err
+}
+
+// TestOAuthCallbackInstallerMissingOpenID pins the safety net for
+// when Lark's exchange response omits the installer's open_id (rare
+// but possible on some tenant configurations). The callback must
+// surface this as a typed error rather than silently install without
+// the auto-bind.
+func TestOAuthCallbackInstallerMissingOpenID(t *testing.T) {
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	stub := &fakeOAuthAPIClient{
+		exch: OAuthExchangeResult{
+			AppID:           "cli_meta_app",
+			AppSecret:       "secret",
+			BotOpenID:       "ou_bot",
+			InstallerOpenID: "", // missing — must surface as a distinct error
+		},
+	}
+	binder := &fakeInstallerBinder{}
+	svc := newOAuthServiceWithBinder(t, func() time.Time { return now }, stub, binder)
+
+	res, err := svc.StartInstall(StartInstallParams{
+		WorkspaceID: uuidFromString(t, "11111111-1111-1111-1111-111111111111"),
+		AgentID:     uuidFromString(t, "22222222-2222-2222-2222-222222222222"),
+		InitiatorID: uuidFromString(t, "33333333-3333-3333-3333-333333333333"),
+	})
+	if err != nil {
+		t.Fatalf("StartInstall: %v", err)
+	}
+	_, err = svc.HandleCallback(context.Background(), CallbackParams{Code: "ok", State: res.State})
+	if !errors.Is(err, ErrExchangeMissingInstallerOpenID) {
+		t.Fatalf("expected ErrExchangeMissingInstallerOpenID, got %v", err)
+	}
+	if binder.called != 0 {
+		t.Fatalf("binder must not run when installer open_id is missing")
+	}
+}
+
 func TestOAuthCallbackPropagatesExchangeError(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	stub := NewStubAPIClient(newDiscardLogger()) // returns ErrAPIClientNotConfigured
@@ -166,23 +248,47 @@ func TestOAuthCallbackPropagatesExchangeError(t *testing.T) {
 	}
 }
 
+// TestOAuthRequiresInstallerBinder pins the constructor-misuse rule:
+// the OAuth install journey REQUIRES installer auto-binding (see the
+// InstallerBinder doc) so a nil binder must fail at construction time
+// rather than slip past and produce installs whose installer is left
+// in an unbound state.
+func TestOAuthRequiresInstallerBinder(t *testing.T) {
+	box := mustTestBox(t)
+	inst, err := NewInstallationService(nil, box)
+	if err != nil {
+		t.Fatalf("InstallationService: %v", err)
+	}
+	_, err = NewOAuthService(OAuthConfig{}, NewStubAPIClient(newDiscardLogger()), inst, nil)
+	if err == nil {
+		t.Fatal("expected nil InstallerBinder to be rejected at construction")
+	}
+	if !strings.Contains(err.Error(), "InstallerBinder") {
+		t.Fatalf("expected InstallerBinder error, got %v", err)
+	}
+}
+
 func TestValidateExchangeResult(t *testing.T) {
 	good := OAuthExchangeResult{
-		AppID:     "cli_app",
-		AppSecret: "secret",
-		BotOpenID: "bot_open_id",
+		AppID:           "cli_app",
+		AppSecret:       "secret",
+		BotOpenID:       "bot_open_id",
+		InstallerOpenID: "ou_installer",
 	}
 	if err := validateExchangeResult(good); err != nil {
 		t.Fatalf("valid result rejected: %v", err)
 	}
-	if err := validateExchangeResult(OAuthExchangeResult{AppSecret: "x", BotOpenID: "y"}); !errors.Is(err, ErrExchangeMissingAppID) {
+	if err := validateExchangeResult(OAuthExchangeResult{AppSecret: "x", BotOpenID: "y", InstallerOpenID: "z"}); !errors.Is(err, ErrExchangeMissingAppID) {
 		t.Fatalf("missing app_id: %v", err)
 	}
-	if err := validateExchangeResult(OAuthExchangeResult{AppID: "x", BotOpenID: "y"}); !errors.Is(err, ErrExchangeMissingAppSecret) {
+	if err := validateExchangeResult(OAuthExchangeResult{AppID: "x", BotOpenID: "y", InstallerOpenID: "z"}); !errors.Is(err, ErrExchangeMissingAppSecret) {
 		t.Fatalf("missing app_secret: %v", err)
 	}
-	if err := validateExchangeResult(OAuthExchangeResult{AppID: "x", AppSecret: "y"}); !errors.Is(err, ErrExchangeMissingBotOpenID) {
+	if err := validateExchangeResult(OAuthExchangeResult{AppID: "x", AppSecret: "y", InstallerOpenID: "z"}); !errors.Is(err, ErrExchangeMissingBotOpenID) {
 		t.Fatalf("missing bot_open_id: %v", err)
+	}
+	if err := validateExchangeResult(OAuthExchangeResult{AppID: "x", AppSecret: "y", BotOpenID: "z"}); !errors.Is(err, ErrExchangeMissingInstallerOpenID) {
+		t.Fatalf("missing installer_open_id: %v", err)
 	}
 }
 

@@ -106,12 +106,13 @@ type ChatTaskEnqueuer interface {
 }
 
 // DispatcherQueries is the narrow subset of *db.Queries the Dispatcher
-// needs for installation routing, identity lookup, and session reload.
-// *db.Queries satisfies it directly; tests substitute a fake.
+// needs for installation routing, identity lookup, dedup, and session
+// reload. *db.Queries satisfies it directly; tests substitute a fake.
 type DispatcherQueries interface {
 	GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error)
 	GetLarkUserBindingByOpenID(ctx context.Context, arg db.GetLarkUserBindingByOpenIDParams) (db.LarkUserBinding, error)
 	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
+	TryInsertLarkInboundDedup(ctx context.Context, messageID string) (string, error)
 }
 
 // Dispatcher is the single per-message entry point on the inbound
@@ -156,7 +157,31 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		return d.drop(ctx, msg, inst.ID, DropReasonRevokedInstallation), nil
 	}
 
-	// 2. Group-mention filter (group chats only). We do this BEFORE
+	// 2. Top-level dedup. Spec §4.3 puts this before group filter and
+	//    identity check so a WebSocket reconnect that replays an event
+	//    cannot:
+	//      a) re-trigger the binding prompt for an unbound user, or
+	//      b) re-write the not_addressed_in_group / unbound_user audit
+	//         rows, or
+	//      c) re-touch the chat_session for a bound message.
+	//    We keep an in-transaction dedup inside AppendUserMessage as a
+	//    belt-and-suspenders safeguard, but THIS is the gate that
+	//    keeps the audit / outbound side from getting noisy under
+	//    reconnect storms.
+	//
+	//    Empty MessageID means the event has no Lark message_id at all
+	//    (non-message events, malformed payloads) and skipping dedup
+	//    is the safe default — we have no key to deduplicate by.
+	if msg.MessageID != "" {
+		if _, err := d.Queries.TryInsertLarkInboundDedup(ctx, msg.MessageID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return d.drop(ctx, msg, inst.ID, DropReasonDuplicate), nil
+			}
+			return DispatchResult{}, fmt.Errorf("dedup insert: %w", err)
+		}
+	}
+
+	// 3. Group-mention filter (group chats only). We do this BEFORE
 	//    identity check so that an unbound user's idle group chatter
 	//    never produces an "you need to bind" reply card spam — the
 	//    Bot is not addressed, so we say nothing.
@@ -164,7 +189,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		return d.drop(ctx, msg, inst.ID, DropReasonNotAddressedInGroup), nil
 	}
 
-	// 3. Identity check. A row in lark_user_binding means the open_id
+	// 4. Identity check. A row in lark_user_binding means the open_id
 	//    maps to a current workspace member (the composite FK to
 	//    member cascades the binding away on membership revocation).
 	binding, err := d.Queries.GetLarkUserBindingByOpenID(ctx, db.GetLarkUserBindingByOpenIDParams{
@@ -191,7 +216,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		return DispatchResult{}, fmt.Errorf("load user binding: %w", err)
 	}
 
-	// 4. Resolve the chat_session. For group chats, the session
+	// 5. Resolve the chat_session. For group chats, the session
 	//    creator is the INSTALLER (stable workspace identity that
 	//    won't cascade-delete when individual group members churn);
 	//    for p2p, the sender is the one and only human in the chat
@@ -212,7 +237,12 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		return DispatchResult{}, fmt.Errorf("ensure chat session: %w", err)
 	}
 
-	// 5. Append message + dedup gate. Idempotent on LarkMessageID.
+	// 6. Append message. The top-level dedup gate above is the
+	//    authoritative idempotency check; the UNIQUE (message_id)
+	//    constraint on lark_inbound_message_dedup is the ultimate
+	//    backstop if two Handle calls race past the gate, in which
+	//    case AppendUserMessage will surface a DB-level error rather
+	//    than silently corrupting chat_session.
 	appendRes, err := d.Chat.AppendUserMessage(ctx, AppendUserMessageParams{
 		ChatSessionID: sessionID,
 		Sender:        binding.MulticaUserID,
@@ -222,24 +252,6 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("append user message: %w", err)
 	}
-	if !appendRes.MessageStored {
-		// Dedup hit. Record an audit row so ops can correlate
-		// reconnect storms with their inbound replay volume.
-		_ = d.Audit.RecordDrop(ctx, AuditDropParams{
-			InstallationID: inst.ID,
-			ChatID:         msg.ChatID,
-			EventType:      msg.EventType,
-			LarkEventID:    msg.EventID,
-			LarkMessageID:  msg.MessageID,
-			Reason:         DropReasonDuplicate,
-		})
-		return DispatchResult{
-			Outcome:        OutcomeDropped,
-			DropReason:     DropReasonDuplicate,
-			InstallationID: inst.ID,
-			ChatSessionID:  sessionID,
-		}, nil
-	}
 
 	res := DispatchResult{
 		Outcome:        OutcomeIngested,
@@ -248,7 +260,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		SenderOpenID:   msg.SenderOpenID,
 	}
 
-	// 6. /issue command, if present. The IssueCommand result from
+	// 7. /issue command, if present. The IssueCommand result from
 	//    AppendUserMessage is non-nil only when the body parsed as a
 	//    valid /issue invocation. We dispatch through IssueService so
 	//    duplicate guard, counter, broadcast and analytics all run.
@@ -261,7 +273,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		res.IssueNumber = issueRes.Issue.Number
 	}
 
-	// 7. Enqueue the chat task that triggers the agent run.
+	// 8. Enqueue the chat task that triggers the agent run.
 	//
 	//    Only the productizable rejections from EnqueueChatTask
 	//    (agent archived, agent has no runtime configured) are mapped

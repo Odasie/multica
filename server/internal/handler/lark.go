@@ -136,11 +136,25 @@ func (h *Handler) CreateLarkInstallation(w http.ResponseWriter, r *http.Request)
 // here because no API surface column doubles as a management handle:
 // revocation goes by the UUID id, which is meaningless without the
 // admin route's authorization, so exposing it is harmless.
+//
+// Response fields:
+//   - configured: at-rest encryption key is set (`LarkInstallations
+//     != nil`). When false, no install flow can succeed at all; the
+//     UI hides the tab.
+//   - install_supported: a real Lark APIClient is wired (not the
+//     stub). When false, the at-rest path works for already-installed
+//     bots but new installs via OAuth would fail at the exchange
+//     step; the UI hides install entry points (the Settings tab
+//     surfaces a "coming soon" notice and the agent-detail "Bind to
+//     Lark" button is hidden). This lets us land the install UI
+//     incrementally without exposing a flow that is guaranteed to
+//     fail end-to-end.
 func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) {
 	if h.LarkInstallations == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"installations": []LarkInstallationResponse{},
-			"configured":    false,
+			"installations":     []LarkInstallationResponse{},
+			"configured":        false,
+			"install_supported": false,
 		})
 		return
 	}
@@ -158,8 +172,9 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 		out = append(out, larkInstallationToResponse(row))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"installations": out,
-		"configured":    true,
+		"installations":     out,
+		"configured":        true,
+		"install_supported": h.LarkAPIClient != nil && h.LarkAPIClient.IsConfigured(),
 	})
 }
 
@@ -300,6 +315,22 @@ func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "lark integration not configured (MULTICA_LARK_SECRET_KEY)")
 		return
 	}
+	// install_supported gate. We check the APIClient before LarkOAuth
+	// for two reasons:
+	//   1. Even with OAuth env set, if the underlying APIClient is
+	//      the stub (no real Lark HTTP transport wired yet), the
+	//      callback will fail at the exchange step. Reporting
+	//      `configured: false` here short-circuits the frontend
+	//      before it sends the user into a flow that is guaranteed
+	//      to break end-to-end.
+	//   2. It makes the test seam tractable: stub APIClient +
+	//      whatever LarkOAuth state produces a configured:false
+	//      response without requiring the test to fully construct
+	//      LarkOAuth (which needs a DB-backed InstallationService).
+	if h.LarkAPIClient == nil || !h.LarkAPIClient.IsConfigured() {
+		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
+		return
+	}
 	if h.LarkOAuth == nil {
 		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
 		return
@@ -407,8 +438,20 @@ func larkOAuthErrorReason(err error) string {
 		return "state_expired"
 	case errors.Is(err, lark.ErrExchangeMissingAppID),
 		errors.Is(err, lark.ErrExchangeMissingAppSecret),
-		errors.Is(err, lark.ErrExchangeMissingBotOpenID):
+		errors.Is(err, lark.ErrExchangeMissingBotOpenID),
+		errors.Is(err, lark.ErrExchangeMissingInstallerOpenID):
 		return "exchange_incomplete"
+	case errors.Is(err, lark.ErrBindingAlreadyAssigned):
+		// Installer auto-bind tripped the same-installation-different-user
+		// guard — surface a dedicated code so the frontend can render
+		// "this Lark account is bound to a different Multica user"
+		// rather than a generic install failure.
+		return "installer_already_bound_elsewhere"
+	case errors.Is(err, lark.ErrBindingNotWorkspaceMember):
+		// Installer is no longer (or never was) a member of the
+		// target workspace. Distinct code so the UI can ask them to
+		// re-verify their workspace membership before retrying.
+		return "installer_not_workspace_member"
 	default:
 		return "internal_error"
 	}

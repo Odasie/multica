@@ -183,6 +183,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// transport — once the real Lark client lands, swap
 				// it in here without touching the subscription.
 				larkClient := lark.NewStubAPIClient(slog.Default())
+				// Expose the APIClient to handlers so the install
+				// surface can short-circuit when no real transport is
+				// wired (IsConfigured() == false). Replace this with
+				// the real Lark HTTP client once it lands; the
+				// install_supported flag will flip automatically and
+				// the UI will reveal the install entry points.
+				h.LarkAPIClient = larkClient
 				patcher := lark.NewPatcher(queries, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
 
@@ -204,7 +211,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// then OAuth callbacks surface ErrAPIClientNotConfigured
 					// loudly instead of silently failing.
 					stub := lark.NewStubAPIClient(slog.Default())
-					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, stub, installSvc)
+					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, stub, installSvc, h.LarkBindingTokens)
 					if oerr != nil {
 						slog.Error("lark: OAuthService init failed; oauth disabled", "error", oerr)
 					} else {

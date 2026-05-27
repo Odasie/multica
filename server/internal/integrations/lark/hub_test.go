@@ -101,11 +101,11 @@ func (f *fakeHubQueries) presetLease(id pgtype.UUID, token string, expires time.
 type fakeConnector struct {
 	mu     sync.Mutex
 	runs   int
-	script []func(ctx context.Context, emit func(InboundMessage)) error
-	emit   func(InboundMessage)
+	script []func(ctx context.Context, emit EventEmitter) error
+	emit   EventEmitter
 }
 
-func (f *fakeConnector) Run(ctx context.Context, _ db.LarkInstallation, emit func(InboundMessage)) error {
+func (f *fakeConnector) Run(ctx context.Context, _ db.LarkInstallation, emit EventEmitter) error {
 	f.mu.Lock()
 	idx := f.runs
 	f.runs++
@@ -321,6 +321,141 @@ func TestHubBacksOffOnFactoryError(t *testing.T) {
 	hub.Wait()
 	if calls > 200 {
 		t.Fatalf("backoff appears broken: %d factory calls in 200ms", calls)
+	}
+}
+
+// TestHubLeaseLossCancelsConnector pins the §4.4 ownership invariant.
+// When another replica steals the lease, the renewer must cancel the
+// connector's run context so the connector exits even if its wire I/O
+// is currently blocked. Without that cancel, replica A could keep
+// reading Lark events for an unbounded window while replica B already
+// believes it is the sole owner — duplicate consumption, exactly what
+// the lease is supposed to prevent.
+func TestHubLeaseLossCancelsConnector(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "66666666-6666-6666-6666-666666666666")
+	q.installations = []db.LarkInstallation{{ID: instID, Status: "active"}}
+
+	// fakeConnector default behavior blocks on ctx.Done — perfect for
+	// "simulate a socket that never returns until we explicitly cancel
+	// it" scenarios. We capture the ctx the supervisor handed it so we
+	// can wait on its done channel directly.
+	connCtxCh := make(chan context.Context, 1)
+	conn := &fakeConnector{
+		script: []func(ctx context.Context, emit EventEmitter) error{
+			func(ctx context.Context, _ EventEmitter) error {
+				connCtxCh <- ctx
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		},
+	}
+	factory := func(_ db.LarkInstallation) (EventConnector, error) { return conn, nil }
+
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 20 * time.Millisecond,
+		PollInterval:       1 * time.Hour, // disable sweep noise; we drive lease state by hand.
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  10 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); hub.Wait() }()
+	go hub.Run(ctx)
+
+	// Wait for the supervisor to hand the connector a run context.
+	var runCtx context.Context
+	select {
+	case runCtx = <-connCtxCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("connector never started")
+	}
+
+	// Simulate lease theft: rewrite the lease row to point at another
+	// replica with a fresh expiry. The next renewal CAS will fail
+	// because the token no longer matches our nodeID, the renewer
+	// returns leased=false, and (with the fix) cancels the run ctx.
+	q.presetLease(instID, "thief-replica", time.Now().Add(10*time.Second))
+
+	select {
+	case <-runCtx.Done():
+		// Expected: renewer cancelled runCtx within a few renewal ticks.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("renewer did not cancel run ctx after lease loss")
+	}
+}
+
+// TestHubEmitReturnsDispatchResultAndError pins the connector-facing
+// emit contract: the supervisor's emit shim wraps the Dispatcher and
+// surfaces both the typed DispatchResult and any infra error so the
+// real Lark connector can post the right outbound (binding card,
+// offline card, etc.) and react to infra failures.
+func TestHubEmitReturnsDispatchResultAndError(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "77777777-7777-7777-7777-777777777777")
+	q.installations = []db.LarkInstallation{{ID: instID, Status: "active"}}
+
+	// Capture what emit returned on the first invocation so the
+	// connector goroutine can stash it for the test.
+	var (
+		gotRes DispatchResult
+		gotErr error
+		gotMu  sync.Mutex
+	)
+	emitDone := make(chan struct{})
+
+	conn := &fakeConnector{
+		script: []func(ctx context.Context, emit EventEmitter) error{
+			func(ctx context.Context, emit EventEmitter) error {
+				res, err := emit(ctx, InboundMessage{
+					EventID:   "evt-1",
+					EventType: "im.message.receive_v1",
+				})
+				gotMu.Lock()
+				gotRes = res
+				gotErr = err
+				gotMu.Unlock()
+				close(emitDone)
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		},
+	}
+	factory := func(_ db.LarkInstallation) (EventConnector, error) { return conn, nil }
+
+	// No dispatcher wired -> emit must return ErrDispatcherNotConfigured.
+	// The point is the error surfaces back to the connector instead of
+	// being silently dropped at the Hub.
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 20 * time.Millisecond,
+		PollInterval:       1 * time.Hour,
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  10 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); hub.Wait() }()
+	go hub.Run(ctx)
+
+	select {
+	case <-emitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("connector never invoked emit")
+	}
+
+	gotMu.Lock()
+	defer gotMu.Unlock()
+	if !errors.Is(gotErr, ErrDispatcherNotConfigured) {
+		t.Fatalf("emit should propagate dispatcher errors; got %v", gotErr)
+	}
+	if gotRes.Outcome != "" {
+		t.Fatalf("emit should not invent an outcome on dispatcher error; got %q", gotRes.Outcome)
 	}
 }
 

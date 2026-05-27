@@ -76,6 +76,8 @@ type fakeAPIClient struct {
 	bindingSent []BindingPromptParams
 }
 
+func (f *fakeAPIClient) IsConfigured() bool { return true }
+
 func (f *fakeAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -144,13 +144,19 @@ func (s *chatSessionService) createSessionAndBinding(ctx context.Context, p Ensu
 	return session.ID, nil
 }
 
-// AppendUserMessage runs idempotent message-append + /issue command
-// detection inside a single transaction. The dedup gate is the first
-// statement: when Lark replays an event after a WebSocket reconnect,
-// the dedup insert returns zero rows and we exit without writing
-// chat_message, without touching the session, and without parsing
-// /issue. That guarantees redundant Lark deliveries cause no
-// duplicate IssueService.Create calls downstream.
+// AppendUserMessage writes the user message into chat_session and
+// (when the body parses as `/issue …`) returns the parsed command so
+// the caller can dispatch through IssueService.
+//
+// Idempotency is enforced upstream: the Dispatcher's top-level
+// TryInsertLarkInboundDedup gate trips before this method ever runs
+// for a replayed message_id (see Dispatcher.Handle step 2). The
+// lark_inbound_message_dedup UNIQUE (message_id) constraint is the
+// ultimate backstop — if two concurrent Handle calls ever both
+// passed the dedup gate for the same id, the second insert would
+// fail with 23505 and surface as an error from this method, which
+// the Dispatcher returns to the WS adapter as an infra failure
+// rather than silently corrupting chat_session.
 func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUserMessageParams) (AppendResult, error) {
 	tx, err := s.txStarter.Begin(ctx)
 	if err != nil {
@@ -158,17 +164,6 @@ func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUser
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.queries.WithTx(tx)
-
-	// Dedup gate. ON CONFLICT DO NOTHING ... RETURNING yields
-	// pgx.ErrNoRows when a row with this message_id already exists.
-	if _, err := qtx.TryInsertLarkInboundDedup(ctx, p.LarkMessageID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Idempotent replay. Nothing to do; nothing to commit
-			// (the tx will be rolled back as a no-op).
-			return AppendResult{MessageStored: false}, nil
-		}
-		return AppendResult{}, fmt.Errorf("dedup insert: %w", err)
-	}
 
 	// Parse the command BEFORE the insert, so the "/issue alone → use
 	// previous user message" fallback queries from the message set
@@ -200,7 +195,7 @@ func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUser
 		return AppendResult{}, fmt.Errorf("commit: %w", err)
 	}
 
-	return AppendResult{MessageStored: true, IssueCommand: cmd}, nil
+	return AppendResult{IssueCommand: cmd}, nil
 }
 
 // titleFromPreviousMessage extracts a sensible title from a prior

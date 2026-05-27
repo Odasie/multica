@@ -24,6 +24,14 @@ export interface ListLarkInstallationsResponse {
    * false the Bind button must be disabled and the panel renders an
    * empty / "ask the operator to enable Lark" state. */
   configured: boolean;
+  /** Whether new installs via OAuth are end-to-end supported, i.e. the
+   * real Lark HTTP APIClient is wired (not the no-op stub). When false
+   * the install entry points are hidden and the panel surfaces a
+   * "coming soon" notice — even if `configured` is true, the OAuth
+   * exchange would fail at the transport step. Optional so older
+   * desktop builds receiving a server that does not yet emit the field
+   * default to `undefined`, treated as not supported. */
+  install_supported?: boolean;
 }
 
 export interface StartLarkInstallResponse {

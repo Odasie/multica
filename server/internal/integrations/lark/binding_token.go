@@ -169,6 +169,49 @@ func (s *BindingTokenService) RedeemAndBind(ctx context.Context, raw string, mul
 	}, nil
 }
 
+// BindInstaller is the auto-binding path for the OAuth install flow:
+// the user who just authorized the install is recorded as bound to
+// their own open_id, so the first inbound message in the bot's DM
+// arrives at a `bound` identity check and the user is NOT prompted
+// with a redundant "click here to bind" card.
+//
+// Token redemption deliberately does NOT share this code path:
+//   - RedeemAndBind consumes a server-minted token in the same tx as
+//     the binding insert; that's how anti-replay works.
+//   - BindInstaller is invoked from the OAuth callback where the
+//     authoritative proof of identity is the signed OAuth state +
+//     the Lark-validated `code` exchange. There is no token to
+//     consume, and inventing one would only widen the attack surface.
+//
+// The underlying CreateLarkUserBinding query is idempotent on
+// (installation_id, lark_open_id) when multica_user_id matches (the
+// ON CONFLICT DO UPDATE gating spelled out on the SQL), so a
+// re-install by the same user is a no-op metadata refresh. A
+// re-install by a DIFFERENT user surfaces as ErrBindingAlreadyAssigned
+// — the OAuth caller treats that as a hard error and the
+// frontend surfaces it as "this Lark account is bound elsewhere",
+// preventing one workspace admin from silently rebinding another's
+// PersonalAgent install.
+func (s *BindingTokenService) BindInstaller(ctx context.Context, p InstallerBindParams) error {
+	_, err := s.queries.CreateLarkUserBinding(ctx, db.CreateLarkUserBindingParams{
+		WorkspaceID:    p.WorkspaceID,
+		MulticaUserID:  p.MulticaUserID,
+		InstallationID: p.InstallationID,
+		LarkOpenID:     string(p.LarkOpenID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrBindingAlreadyAssigned
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrBindingNotWorkspaceMember
+		}
+		return fmt.Errorf("bind installer: %w", err)
+	}
+	return nil
+}
+
 // ErrBindingTokenInvalid is returned by RedeemAndBind when the token
 // hash does not exist, the token has already been consumed, or it
 // has expired. The caller must NOT distinguish those sub-cases —

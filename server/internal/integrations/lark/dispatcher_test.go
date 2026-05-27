@@ -14,6 +14,12 @@ import (
 // fakeQueries is the unit-test seam for DispatcherQueries. Each field
 // is the canned response the fake returns from the corresponding
 // method; ErrNoRows variants pin specific failure modes.
+//
+// Dedup state lives in `dedupSeen` (set of message_ids previously
+// inserted) so tests can simulate a Lark reconnect that replays the
+// same event by calling Handle twice with the same MessageID. The
+// default behavior — empty set — accepts every insert (first delivery
+// for every test that does not pre-seed it).
 type fakeQueries struct {
 	installationByApp  db.LarkInstallation
 	installationErr    error
@@ -21,9 +27,12 @@ type fakeQueries struct {
 	userBindingErr     error
 	chatSession        db.ChatSession
 	chatSessionErr     error
+	dedupSeen          map[string]struct{}
+	dedupErr           error
 	calledUserBinding  int
 	calledChatSession  int
 	calledInstallation int
+	calledDedup        int
 }
 
 func (f *fakeQueries) GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error) {
@@ -39,6 +48,23 @@ func (f *fakeQueries) GetLarkUserBindingByOpenID(ctx context.Context, arg db.Get
 func (f *fakeQueries) GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error) {
 	f.calledChatSession++
 	return f.chatSession, f.chatSessionErr
+}
+
+func (f *fakeQueries) TryInsertLarkInboundDedup(ctx context.Context, messageID string) (string, error) {
+	f.calledDedup++
+	if f.dedupErr != nil {
+		return "", f.dedupErr
+	}
+	if f.dedupSeen == nil {
+		f.dedupSeen = map[string]struct{}{}
+	}
+	if _, hit := f.dedupSeen[messageID]; hit {
+		// Mirror the real query: ON CONFLICT DO NOTHING ... RETURNING
+		// surfaces pgx.ErrNoRows when the row already exists.
+		return "", pgx.ErrNoRows
+	}
+	f.dedupSeen[messageID] = struct{}{}
+	return messageID, nil
 }
 
 // fakeChat is a stub ChatSessionService that records what the
@@ -225,10 +251,8 @@ func TestDispatcher_PlainMessageEnqueuesTask(t *testing.T) {
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
 	}
 	chat := &fakeChat{
-		ensureID: sessionID,
-		appendResult: AppendResult{
-			MessageStored: true,
-		},
+		ensureID:     sessionID,
+		appendResult: AppendResult{},
 	}
 	enq := &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}}
 	d := &Dispatcher{
@@ -269,7 +293,7 @@ func TestDispatcher_GroupMessageUsesInstallerAsCreator(t *testing.T) {
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: inst.AgentID},
 	}
-	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	d := &Dispatcher{
 		Queries:     queries,
 		Chat:        chat,
@@ -292,13 +316,16 @@ func TestDispatcher_GroupMessageUsesInstallerAsCreator(t *testing.T) {
 }
 
 func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
+	// Pre-seed the dedup table so the top-level dedup gate trips on
+	// the first Handle call — simulates a Lark reconnect replaying an
+	// event we already processed in a previous run.
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
+		dedupSeen:         map[string]struct{}{"msg-dup": {}},
 	}
 	chat := &fakeChat{
-		ensureID:     validUUID(0x66),
-		appendResult: AppendResult{MessageStored: false},
+		ensureID: validUUID(0x66),
 	}
 	enq := &fakeEnqueuer{}
 	audit := &fakeAudit{}
@@ -322,8 +349,73 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 	if enq.called != 0 {
 		t.Fatalf("dedup hit must not enqueue task, called=%d", enq.called)
 	}
+	if chat.calledEnsure != 0 || chat.calledAppend != 0 {
+		t.Fatalf("dedup hit must short-circuit before chat lookup; ensure=%d append=%d",
+			chat.calledEnsure, chat.calledAppend)
+	}
+	if queries.calledUserBinding != 0 {
+		t.Fatalf("dedup hit must short-circuit before identity check, got %d binding calls",
+			queries.calledUserBinding)
+	}
 	if len(audit.drops) != 1 || audit.drops[0].Reason != DropReasonDuplicate {
 		t.Fatalf("expected duplicate audit row, got %+v", audit.drops)
+	}
+}
+
+// TestDispatcher_DedupBeforeGroupFilter pins the §4.3 ordering: a
+// replayed group event that was NOT addressed to the Bot must NOT
+// re-write a not_addressed_in_group audit row on every reconnect, and
+// must NOT re-trigger any binding-prompt side effect. The top-level
+// dedup gate is what guarantees this; before this fix the group
+// filter ran first and unbounded replays produced unbounded audit
+// noise + reply-card spam.
+func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		dedupSeen:         map[string]struct{}{"msg-replay": {}},
+	}
+	audit := &fakeAudit{}
+	d := &Dispatcher{Queries: queries, Audit: audit}
+
+	res, _ := d.Handle(context.Background(), InboundMessage{
+		AppID:          "ok",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: false,
+		MessageID:      "msg-replay",
+	})
+	if res.DropReason != DropReasonDuplicate {
+		t.Fatalf("dedup must beat group filter; got drop reason %q", res.DropReason)
+	}
+	if len(audit.drops) != 1 || audit.drops[0].Reason != DropReasonDuplicate {
+		t.Fatalf("expected exactly one duplicate audit row, got %+v", audit.drops)
+	}
+}
+
+// TestDispatcher_DedupBeforeIdentityCheck pins the same ordering for
+// unbound users: a replayed event from an unbound open_id must not
+// re-fire the OutcomeNeedsBinding path on every reconnect — that
+// would spam the user with binding-prompt cards.
+func TestDispatcher_DedupBeforeIdentityCheck(t *testing.T) {
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBindingErr:    pgx.ErrNoRows, // unbound — would normally trigger OutcomeNeedsBinding
+		dedupSeen:         map[string]struct{}{"msg-replay": {}},
+	}
+	audit := &fakeAudit{}
+	d := &Dispatcher{Queries: queries, Audit: audit}
+
+	res, _ := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		MessageID:    "msg-replay",
+	})
+	if res.Outcome != OutcomeDropped || res.DropReason != DropReasonDuplicate {
+		t.Fatalf("dedup must beat identity check; got %+v", res)
+	}
+	if queries.calledUserBinding != 0 {
+		t.Fatalf("identity check must not run for a deduped replay, got %d calls",
+			queries.calledUserBinding)
 	}
 }
 
@@ -338,8 +430,7 @@ func TestDispatcher_IssueCommandCreatesIssue(t *testing.T) {
 	chat := &fakeChat{
 		ensureID: sessionID,
 		appendResult: AppendResult{
-			MessageStored: true,
-			IssueCommand:  &IssueCommand{Title: "ship it", Description: "ship the thing"},
+			IssueCommand: &IssueCommand{Title: "ship it", Description: "ship the thing"},
 		},
 	}
 	issueSvc := &fakeIssueCreator{result: service.IssueCreateResult{Issue: db.Issue{ID: validUUID(0x88), Number: 42}}}
@@ -390,8 +481,7 @@ func TestDispatcher_EmptyTitleSurfacesError(t *testing.T) {
 	chat := &fakeChat{
 		ensureID: sessionID,
 		appendResult: AppendResult{
-			MessageStored: true,
-			IssueCommand:  &IssueCommand{Title: ""},
+			IssueCommand: &IssueCommand{Title: ""},
 		},
 	}
 	issueSvc := &fakeIssueCreator{}
@@ -425,7 +515,7 @@ func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
 	}
-	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentNoRuntime}
 	d := &Dispatcher{
 		Queries:     queries,
@@ -459,7 +549,7 @@ func TestDispatcher_AgentArchivedSurfacesDistinctOutcome(t *testing.T) {
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
 	}
-	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentArchived}
 	d := &Dispatcher{
 		Queries:     queries,
@@ -494,7 +584,7 @@ func TestDispatcher_InfraFailureSurfacesError(t *testing.T) {
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
 	}
-	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	infraErr := errors.New("create chat task: connection refused")
 	enq := &fakeEnqueuer{err: infraErr}
 	d := &Dispatcher{

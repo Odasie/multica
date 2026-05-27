@@ -25,6 +25,33 @@ type HubQueries interface {
 	ReleaseLarkWSLease(ctx context.Context, arg db.ReleaseLarkWSLeaseParams) error
 }
 
+// EventEmitter is the per-message callback the Hub hands to an
+// EventConnector. Calling it dispatches the normalized inbound
+// message and returns the typed outcome plus any infrastructure
+// error from the Dispatcher.
+//
+// Connectors react to the return value to decide what to do on the
+// Lark side:
+//
+//   - A non-nil error is a real infrastructure failure (DB down,
+//     etc.) — the connector should reconnect (the Hub will retry
+//     under backoff) and surface the error to ops, NOT swallow it.
+//   - A nil error with OutcomeNeedsBinding tells the connector to
+//     send the binding-prompt card to the sender's open_id.
+//   - OutcomeAgentOffline / OutcomeAgentArchived tell the connector
+//     to send the respective copy as a Lark card; the chat_message
+//     row is already persisted, so the agent will pick the message
+//     up on resume.
+//   - OutcomeIngested means the message landed and (optionally) a
+//     task was enqueued; the connector emits a "thinking…" card and
+//     lets the outbound Patcher take over from there.
+//   - OutcomeDropped is informational only (the message was filtered
+//     for a legitimate reason); typical connectors do nothing.
+//
+// The Dispatcher's invariants (identity check, dedup, audit) are NOT
+// the connector's concern — the connector only sees the verdict.
+type EventEmitter func(ctx context.Context, msg InboundMessage) (DispatchResult, error)
+
 // EventConnector is the per-installation transport. The Hub owns the
 // lifecycle (when to start, when to stop, when to back off), and the
 // connector owns the actual wire protocol — opening the Lark long
@@ -42,8 +69,14 @@ type HubQueries interface {
 // contexts — the Hub may call Run, return, and call Run again after
 // backoff. Allocating per-call state is fine; persistent state lives in
 // the connector struct.
+//
+// emit returns the Dispatcher's verdict + any infra error so the
+// connector can post the corresponding Lark-side reply (binding card,
+// offline card, etc.) and / or decide to disconnect on a hard failure.
+// The connector MUST NOT bypass the Dispatcher by writing to the DB
+// directly; emit is the only ingress path.
 type EventConnector interface {
-	Run(ctx context.Context, inst db.LarkInstallation, emit func(InboundMessage)) error
+	Run(ctx context.Context, inst db.LarkInstallation, emit EventEmitter) error
 }
 
 // ConnectorFactory builds an EventConnector for a specific installation
@@ -308,12 +341,19 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		renewDone := make(chan struct{})
 		go func() {
 			defer close(renewDone)
-			h.renewLeaseUntil(runCtx, inst.ID)
+			// renewLeaseUntil cancels runCtx itself on lease loss so the
+			// connector exits even if its wire I/O is currently blocked.
+			// This is what makes the "at most one active WS per
+			// installation across replicas" invariant hold under lease
+			// theft: A's renewer fails CAS the moment B steals the
+			// lease, A's runCtx flips done, A's connector returns, and
+			// only B is consuming events.
+			h.renewLeaseUntil(runCtx, runCancel, inst.ID)
 		}()
 
 		startedAt := h.cfg.Now()
-		runErr := conn.Run(runCtx, inst, func(msg InboundMessage) {
-			h.handleEvent(runCtx, log, msg)
+		runErr := conn.Run(runCtx, inst, func(emitCtx context.Context, msg InboundMessage) (DispatchResult, error) {
+			return h.handleEvent(emitCtx, log, msg)
 		})
 		runCancel()
 		<-renewDone
@@ -364,10 +404,18 @@ func (h *Hub) acquireLease(ctx context.Context, instID pgtype.UUID) (bool, error
 }
 
 // renewLeaseUntil re-acquires the lease on a tight cadence so a single
-// missed renewal does not yield it. Exits when ctx is cancelled. Lease
-// loss (acquireLease returns leased=false) cancels the parent run ctx
-// so the connector can exit and we can re-enter the backoff loop.
-func (h *Hub) renewLeaseUntil(ctx context.Context, instID pgtype.UUID) {
+// missed renewal does not yield it. Exits when ctx is cancelled.
+//
+// Lease loss (acquireLease returns leased=false) MUST cancel the
+// connector's run context — otherwise the supervise loop would
+// release the lease but the connector goroutine could still be
+// blocked on its wire I/O and continue consuming Lark events until
+// its TCP read finally errored out. That window is exactly the
+// "two replicas processing the same installation" failure mode the
+// §4.4 ownership invariant rules out. Calling cancelRun here forces
+// the connector's ctx to flip done immediately, so conn.Run returns
+// in bounded time even when the underlying socket is silent.
+func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc, instID pgtype.UUID) {
 	t := time.NewTicker(h.cfg.LeaseRenewInterval)
 	defer t.Stop()
 	for {
@@ -387,6 +435,7 @@ func (h *Hub) renewLeaseUntil(ctx context.Context, instID pgtype.UUID) {
 				h.cfg.Logger.Warn("lark hub: lease lost; tearing down connector",
 					"installation_id", uuidString(instID),
 				)
+				cancelRun()
 				return
 			}
 		}
@@ -410,12 +459,17 @@ func (h *Hub) releaseLease(ctx context.Context, instID pgtype.UUID) {
 // retry here — the Dispatcher classifies errors itself (productizable
 // outcomes vs. infra failures), and infra failures propagate up to the
 // connector, which decides whether to reconnect.
-func (h *Hub) handleEvent(ctx context.Context, log *slog.Logger, msg InboundMessage) {
+//
+// The result + error are returned to the connector via the EventEmitter
+// callback so it can post the Lark-side reply that matches the
+// outcome (binding card, offline card, etc.) and react to infra
+// failures (e.g. tear the WS down so the Hub re-establishes it).
+func (h *Hub) handleEvent(ctx context.Context, log *slog.Logger, msg InboundMessage) (DispatchResult, error) {
 	if h.dispatcher == nil {
 		log.Warn("lark hub: dispatcher not configured; dropping event",
 			"event_id", msg.EventID,
 		)
-		return
+		return DispatchResult{}, ErrDispatcherNotConfigured
 	}
 	res, err := h.dispatcher.Handle(ctx, msg)
 	if err != nil {
@@ -423,14 +477,21 @@ func (h *Hub) handleEvent(ctx context.Context, log *slog.Logger, msg InboundMess
 			"event_id", msg.EventID,
 			"error", err,
 		)
-		return
+		return res, err
 	}
 	log.Debug("lark hub: dispatch outcome",
 		"event_id", msg.EventID,
 		"outcome", string(res.Outcome),
 		"drop_reason", string(res.DropReason),
 	)
+	return res, nil
 }
+
+// ErrDispatcherNotConfigured is surfaced to the connector when emit is
+// called on a Hub that was constructed without a Dispatcher. Returning
+// it (instead of silently dropping) lets the connector log and / or
+// disconnect so the misconfiguration is visible in production.
+var ErrDispatcherNotConfigured = errors.New("lark hub: dispatcher not configured")
 
 func (h *Hub) cancelAll() {
 	h.mu.Lock()
