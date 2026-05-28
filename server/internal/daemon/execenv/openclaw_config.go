@@ -157,10 +157,12 @@ func prepareOpenclawConfig(envRoot, workDir string, opts OpenclawConfigPrep) (Op
 	// config via `$include` would let user-only entries leak in (and an empty
 	// managed set would not actually clear inherited servers). To enforce the
 	// Codex-style "managed wins, user globals invisible" contract, fetch the
-	// user's resolved config, drop the `mcp` block, write a sanitized snapshot
+	// user's resolved config, drop just the `mcp.servers` map (keep other
+	// `mcp.*` settings like `sessionIdleTtlMs`), write a sanitized snapshot
 	// in envRoot, and $include the snapshot instead of the live user file.
-	// The wrapper's `mcp.servers` then becomes the only MCP definition the
-	// snapshot's resolution can yield.
+	// The wrapper's `mcp.servers` then becomes the only MCP server definition
+	// the snapshot's resolution can yield, while the user's surrounding `mcp`
+	// tuning still flows through.
 	snapshotPath := ""
 	if hasManagedMcp && exists {
 		resolved, ferr := openclawResolvedFullConfig(bin, timeout)
@@ -174,7 +176,7 @@ func prepareOpenclawConfig(envRoot, workDir string, opts OpenclawConfigPrep) (Op
 			exists = false
 			activePath = ""
 		} else {
-			delete(resolved, "mcp")
+			stripUserMcpServers(resolved)
 			snapBytes, merr := json.MarshalIndent(resolved, "", "  ")
 			if merr != nil {
 				return OpenclawConfigResult{}, fmt.Errorf("marshal openclaw user snapshot: %w", merr)
@@ -309,6 +311,28 @@ func rewriteAgentsListWorkspaces(list []any, workDir string) []any {
 		return nil
 	}
 	return out
+}
+
+// stripUserMcpServers removes only `mcp.servers` from a resolved user
+// config, leaving every other key under `mcp` (e.g. `sessionIdleTtlMs`)
+// intact. The wrapper's managed `mcp.servers` becomes the sole server
+// definition while the user's surrounding MCP tuning still applies — see
+// https://docs.openclaw.ai/gateway/configuration-reference#mcp for the
+// full list of sibling settings the snapshot should preserve.
+//
+// If the resulting `mcp` block has no keys left, the parent `mcp` key is
+// dropped too so the snapshot doesn't carry an empty placeholder. Any
+// non-object value for `mcp` is left as-is; we only know how to strip
+// servers from the documented object shape.
+func stripUserMcpServers(resolved map[string]any) {
+	mcp, ok := resolved["mcp"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(mcp, "servers")
+	if len(mcp) == 0 {
+		delete(resolved, "mcp")
+	}
 }
 
 // openclawActiveConfigPath runs `openclaw config file` to discover the path

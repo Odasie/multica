@@ -535,6 +535,78 @@ func TestPrepareOpenclawConfigStrictReplacesUserMcpServers(t *testing.T) {
 	}
 }
 
+// TestPrepareOpenclawConfigStrictPreservesNonServerMcpKeys — Elon's
+// follow-up must-fix: the strict-replace path must scope only to
+// `mcp.servers`, not the entire `mcp` block. OpenClaw config has
+// sibling settings under `mcp` (e.g. `sessionIdleTtlMs` — see
+// https://docs.openclaw.ai/gateway/configuration-reference#mcp). The
+// previous implementation deleted the whole `mcp` block which silently
+// reset those siblings to OpenClaw's defaults. This test fixes that
+// scope: managed-MCP path drops `mcp.servers` but leaves
+// `mcp.sessionIdleTtlMs` intact in the snapshot.
+func TestPrepareOpenclawConfigStrictPreservesNonServerMcpKeys(t *testing.T) {
+	envRoot := t.TempDir()
+	workDir := filepath.Join(envRoot, "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	userCfgPath := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(userCfgPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write user cfg: %v", err)
+	}
+	// User's resolved config has BOTH `mcp.servers` (must be stripped) and
+	// `mcp.sessionIdleTtlMs` (must survive). The snapshot is what OpenClaw
+	// loads via the wrapper's $include, so only the snapshot's `mcp` block
+	// is consulted for non-server settings.
+	resolvedUser := `{
+		"mcp": {
+			"sessionIdleTtlMs": 300000,
+			"servers": {"global_one": {"command": "/bin/echo"}}
+		},
+		"gateway": {"port": 18789}
+	}`
+	stub := installOpenclawStub(t, map[string]openclawResponse{
+		"config file":                   {stdout: userCfgPath},
+		"config get --json":             {stdout: resolvedUser},
+		"config get agents.list --json": {stdout: "null"},
+	})
+	mcpConfig := json.RawMessage(`{"mcpServers": {"managed_only": {"command": "uvx", "args": ["m"]}}}`)
+
+	result, err := prepareOpenclawConfig(envRoot, workDir, OpenclawConfigPrep{
+		OpenclawBin: stub.bin,
+		McpConfig:   mcpConfig,
+	})
+	if err != nil {
+		t.Fatalf("prepareOpenclawConfig: %v", err)
+	}
+
+	snapPath := filepath.Join(envRoot, openclawUserSnapshotFile)
+	snap := mustReadJSON(t, snapPath)
+	snapMcp, ok := snap["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot lost the mcp block entirely; mcp.sessionIdleTtlMs should have survived: %v", snap)
+	}
+	if _, leaked := snapMcp["servers"]; leaked {
+		t.Errorf("snapshot still has mcp.servers; strict scope must drop it: %v", snapMcp)
+	}
+	// json.Unmarshal decodes JSON numbers as float64.
+	if ttl, ok := snapMcp["sessionIdleTtlMs"].(float64); !ok || ttl != 300000 {
+		t.Errorf("snapshot lost mcp.sessionIdleTtlMs (should be preserved): %v", snapMcp)
+	}
+
+	// Wrapper still emits the managed-only server set on top, so the
+	// effective view post-include is exactly the managed set.
+	got := mustReadJSON(t, result.ConfigPath)
+	wrapperMcp, _ := got["mcp"].(map[string]any)
+	servers, _ := wrapperMcp["servers"].(map[string]any)
+	if _, ok := servers["managed_only"]; !ok {
+		t.Errorf("wrapper missing managed_only: %v", servers)
+	}
+	if _, leaked := servers["global_one"]; leaked {
+		t.Errorf("global_one leaked into wrapper: %v", servers)
+	}
+}
+
 // TestPrepareOpenclawConfigStrictEmptyManagedSetDropsUserMcp — empty
 // managed set `{}` must drop the user's global mcp.servers too. Without
 // strict replace, OpenClaw would still resolve user-only servers via the
