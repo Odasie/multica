@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -184,6 +185,15 @@ type AgentTaskResponse struct {
 	PriorSessionID          string                `json:"prior_session_id,omitempty"`          // session ID from a previous task on same issue
 	PriorWorkDir            string                `json:"prior_work_dir,omitempty"`            // work_dir from a previous task on same issue
 	WorkDir                 string                `json:"work_dir,omitempty"`                  // local working directory pinned for this task; populated once the daemon reports it
+	// RelativeWorkDir is a privacy-safe display form of WorkDir intended for
+	// the UI. For standard tasks it strips the daemon's workspaces root so
+	// the user sees `<wsUUID>/<taskShort>/workdir`; for local_directory
+	// tasks the absolute path lives outside the envRoot layout, so we fall
+	// back to the last two path segments to avoid leaking the home dir or
+	// username. Empty when WorkDir is empty or workspace can't be resolved.
+	// See relativeWorkDir() for the full rules. Older clients can still
+	// read WorkDir directly; newer UIs should prefer RelativeWorkDir.
+	RelativeWorkDir         string                `json:"relative_work_dir,omitempty"`
 	TriggerCommentID        *string               `json:"trigger_comment_id,omitempty"`        // comment that triggered this task
 	TriggerCommentContent   string                `json:"trigger_comment_content,omitempty"`   // content of the triggering comment
 	TriggerSummary          *string               `json:"trigger_summary,omitempty"`           // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
@@ -249,7 +259,13 @@ type TaskAgentData struct {
 	ThinkingLevel string                   `json:"thinking_level,omitempty"`
 }
 
-func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
+// taskToResponse maps a queue row to its wire shape. workspaceID is threaded
+// in because the row itself doesn't carry one (workspace lives on the agent
+// / issue / chat session) — we ask the caller to resolve it once and pass it
+// down. It populates WorkspaceID and powers the privacy-safe RelativeWorkDir
+// derivation; pass "" only on daemon-facing paths that genuinely don't have
+// it, in which case RelativeWorkDir falls back to the existing WorkDir.
+func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	var result any
 	if t.Result != nil {
 		json.Unmarshal(t.Result, &result)
@@ -267,6 +283,7 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 		AgentID:          uuidToString(t.AgentID),
 		RuntimeID:        uuidToString(t.RuntimeID),
 		IssueID:          uuidToString(t.IssueID),
+		WorkspaceID:      workspaceID,
 		Status:           t.Status,
 		Priority:         t.Priority,
 		DispatchedAt:     timestampToPtr(t.DispatchedAt),
@@ -282,6 +299,7 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 		TriggerCommentID: uuidToPtr(t.TriggerCommentID),
 		TriggerSummary:   textToPtr(t.TriggerSummary),
 		WorkDir:          workDir,
+		RelativeWorkDir:  relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
 		// Surface task source so the UI can distinguish issue-linked tasks
 		// from chat-spawned or autopilot-spawned ones; all three may arrive
 		// with issue_id = "" once a task has no linked issue.
@@ -289,6 +307,71 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 		AutopilotRunID: uuidToString(t.AutopilotRunID),
 		Kind:           computeTaskKind(t),
 	}
+}
+
+// relativeWorkDir produces a privacy-safe display form of the daemon-reported
+// absolute work_dir.
+//
+//   - For standard tasks (work_dir laid out as `<workspacesRoot>/<wsUUID>/
+//     <taskShort>/workdir` by execenv.Prepare), it strips everything up to and
+//     including the workspaces root, returning `<wsUUID>/<taskShort>/workdir`.
+//   - For local_directory tasks where work_dir is the user's own absolute
+//     path, the envRoot substring is absent. We fall back to the last two
+//     path segments — enough context ("repos/foo") for the user to
+//     recognise the directory without leaking the home dir or username.
+//
+// Returns empty when work_dir is empty or workspace_id / task_id are
+// missing. shortTaskID() must stay in lock-step with
+// server/internal/daemon/execenv/git.go:shortID — both consume the same
+// task UUID; if that helper changes, this one must too or the envRoot
+// match silently degrades to the local_directory fallback.
+func relativeWorkDir(workDir, workspaceID, taskID string) string {
+	if workDir == "" {
+		return ""
+	}
+	// Normalize Windows separators so the rest of the function only
+	// reasons about forward slashes.
+	normalized := strings.ReplaceAll(workDir, "\\", "/")
+
+	if workspaceID != "" && taskID != "" {
+		envRootSuffix := workspaceID + "/" + shortTaskID(taskID)
+		if idx := strings.Index(normalized, envRootSuffix); idx >= 0 {
+			return normalized[idx:]
+		}
+	}
+
+	return tailPathSegments(normalized, 2)
+}
+
+// shortTaskID mirrors execenv.shortID — first 8 hex chars of the UUID
+// with dashes stripped. Kept inline here so the agent handler has zero
+// imports from the daemon package (which would create an unwanted cycle
+// between handler and daemon).
+func shortTaskID(uuid string) string {
+	s := strings.ReplaceAll(uuid, "-", "")
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
+// tailPathSegments returns the trailing n non-empty segments of a forward-
+// slash path, joined with "/". Used as the privacy-safe fallback for
+// local_directory work_dirs — n=2 keeps "<parent>/<basename>" which is
+// usually enough context without leaking $HOME or the username.
+func tailPathSegments(p string, n int) string {
+	if n <= 0 || p == "" {
+		return ""
+	}
+	parts := strings.Split(p, "/")
+	out := make([]string, 0, n)
+	for i := len(parts) - 1; i >= 0 && len(out) < n; i-- {
+		if parts[i] == "" {
+			continue
+		}
+		out = append([]string{parts[i]}, out...)
+	}
+	return strings.Join(out, "/")
 }
 
 // computeTaskKind picks the source-discriminator string the activity UI uses
@@ -1120,7 +1203,7 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]AgentTaskResponse, len(tasks))
 	for i, t := range tasks {
-		resp[i] = taskToResponse(t)
+		resp[i] = taskToResponse(t, workspaceID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -1257,7 +1340,7 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
 			continue
 		}
-		resp = append(resp, taskToResponse(t))
+		resp = append(resp, taskToResponse(t, workspaceID))
 	}
 
 	writeJSON(w, http.StatusOK, resp)

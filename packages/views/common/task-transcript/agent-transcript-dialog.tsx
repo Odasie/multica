@@ -17,6 +17,7 @@ import {
   Cloud,
   Cpu,
   Filter,
+  FolderTree,
   ArrowDownNarrowWide,
   ArrowUpNarrowWide,
 } from "lucide-react";
@@ -472,6 +473,17 @@ export function AgentTranscriptDialog({
                 ? t(($) => $.transcript.events_filtered, { shown: filteredItems.length, total: items.length })
                 : t(($) => $.transcript.events, { count: items.length })}
             </MetadataChip>
+
+            {/* Working directory — server-derived display path. Falls back to
+                nothing when older backends omit the field rather than rendering
+                `work_dir` raw and leaking the user's home directory. */}
+            {task.relative_work_dir && (
+              <MetadataChip icon={<FolderTree className="h-3 w-3" />}>
+                <span className="font-mono" title={task.work_dir || task.relative_work_dir}>
+                  {task.relative_work_dir}
+                </span>
+              </MetadataChip>
+            )}
 
             {/* Created time */}
             {task.created_at && (

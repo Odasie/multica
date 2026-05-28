@@ -120,9 +120,21 @@ export interface AgentTask {
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct";
   /**
    * Local working directory pinned for this task by the daemon. Empty until
-   * the daemon reports a work_dir (typically once execution starts).
+   * the daemon reports a work_dir (typically once execution starts). This is
+   * the canonical absolute path the agent runs in; UI surfaces should prefer
+   * `relative_work_dir` to avoid leaking the user's home directory.
    */
   work_dir?: string;
+  /**
+   * Privacy-safe display form of `work_dir`, derived on the server. For
+   * standard tasks the daemon's workspaces root has been stripped off
+   * (`<wsUUID>/<taskShort>/workdir`); for local_directory tasks where the
+   * path lives outside that layout, only the trailing two path segments
+   * are returned so neither the home directory nor the username leak into
+   * the UI. Older backends omit the field — render it conditionally and
+   * fall back to hiding the chip rather than rendering `work_dir` raw.
+   */
+  relative_work_dir?: string;
 }
 
 export interface Agent {
