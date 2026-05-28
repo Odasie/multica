@@ -275,6 +275,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
+	// Stripe webhook (no Multica auth — Stripe signs the raw body
+	// with a shared secret, the multica-cloud upstream verifies. We
+	// only forward the bytes + the Stripe-Signature header; see
+	// HandleCloudBillingStripeWebhook for the rationale).
+	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
@@ -636,6 +641,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/nodes/reboot", h.RebootCloudRuntimeNode)
 				r.Post("/nodes/status", h.GetCloudRuntimeNodeStatus)
 				r.Post("/nodes/exec", h.ExecCloudRuntimeNode)
+			})
+
+			// Cloud Billing proxy. Same upstream service / port as
+			// cloud-runtime — multica-cloud's Fleet and Billing share
+			// :8080 and the same chi router. All routes here forward
+			// to /api/v1/billing/* with X-User-ID stamped from the
+			// authenticated context. The Stripe webhook is the
+			// outlier and lives outside this Auth group (see above).
+			r.Route("/api/cloud-billing", func(r chi.Router) {
+				r.Get("/balance", h.GetCloudBillingBalance)
+				r.Get("/transactions", h.ListCloudBillingTransactions)
+				r.Get("/batches", h.ListCloudBillingBatches)
+				r.Get("/topups", h.ListCloudBillingTopups)
+				r.Get("/price-tiers", h.ListCloudBillingPriceTiers)
+				r.Post("/checkout-sessions", h.CreateCloudBillingCheckoutSession)
+				r.Get("/checkout-sessions/{sessionId}", h.GetCloudBillingCheckoutSession)
+				r.Post("/portal-sessions", h.CreateCloudBillingPortalSession)
 			})
 
 			// Tasks (user-facing, with ownership check)
