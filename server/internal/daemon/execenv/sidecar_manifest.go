@@ -17,16 +17,37 @@ import (
 // bookkeeping file used to undo the litter.
 const sidecarManifestFile = ".multica_sidecar_manifest.json"
 
+// errPathPreExists is the sentinel recordWriteFile returns when the
+// target path already exists. The manifest contract is that we never
+// mutate paths we don't own: a pre-existing file belongs to the user
+// (or to stale state from a crashed prior run we cannot safely
+// distinguish from intentional user content) and the write must be
+// refused so cleanup can be a pure deletion of paths we created.
+//
+// Callers handle this in one of two ways:
+//
+//   - For per-skill directories the caller allocates a collision-free
+//     alternative slug (see allocateCollisionFreeSkillDir) and retries
+//     so the agent still discovers the Multica skill, just under a
+//     different directory name.
+//   - For Multica-only namespaces (.agent_context/issue_context.md,
+//     .multica/project/resources.json) the caller swallows the error
+//     and proceeds — the agent's runtime brief already carries every
+//     fact that would have appeared in those files, so missing-from-
+//     disk is degraded behavior, not failure.
+var errPathPreExists = errors.New("execenv: refuse to overwrite pre-existing path")
+
 // sidecarManifest records the filesystem mutations writeContextFiles and
 // its callees make inside the agent's WorkDir for a single task. The
 // manifest is the second half of the contract that makes local_directory
 // runs byte-exactly reversible:
 //
-//   - Files lists absolute paths of regular files we created. A file is
-//     recorded only when it did NOT pre-exist; if the user already had a
-//     file at the same path (a colliding skill name, for example) we will
-//     have just overwritten it, but recording it would let Cleanup
-//     compound the damage by deleting the user's path on the way out.
+//   - Files lists absolute paths of regular files we created. Files are
+//     recorded only after recordWriteFile has verified the target did
+//     NOT pre-exist; recordWriteFile refuses to overwrite a pre-existing
+//     path, so the manifest's existence rule and the write side's
+//     refuse-to-clobber rule are the same invariant viewed from two
+//     sides.
 //   - Dirs lists absolute paths of directories we created, in root-first
 //     creation order. Cleanup walks the list in reverse so deepest dirs
 //     get tried first; rmdir of a directory the user has populated since
@@ -96,32 +117,83 @@ func recordMkdirAll(path string, perm os.FileMode, m *sidecarManifest) error {
 }
 
 // recordWriteFile writes data to path with perm and records the path in
-// m, BUT only when the file did not pre-exist. A pre-existing file at
-// the same path means the user owns the path (most commonly: a skill
-// name collision with a user-installed skill, or a user-authored
-// issue_context.md they happened to keep around) — Cleanup must leave
-// that path alone on the way out, even though we just clobbered its
-// contents. We can't restore the original bytes (they're gone), but we
-// can at least avoid deleting the file outright on cleanup.
+// m for later cleanup, but ONLY when path does not already exist. When
+// path is occupied — by a regular file, a symlink, a directory, or any
+// other filesystem entry — the function returns errPathPreExists
+// without touching the path. The user's bytes (or pre-existing entry
+// type) are preserved exactly.
 //
-// When m is nil this collapses to a plain os.WriteFile, matching the
-// Reuse path's nil-mode (see recordMkdirAll for the rationale).
+// This is the invariant the manifest design rests on: cleanup is a
+// pure deletion of paths we created, never a restore. Overwriting a
+// pre-existing path and then refusing to delete it on cleanup (the
+// pre-fix behavior) destroys user data twice — once at write time and
+// once by leaving the corrupted bytes in place at exit. Refusing to
+// overwrite removes both halves of that failure mode.
+//
+// When m is nil this collapses to a plain os.WriteFile — the Reuse
+// path uses the nil mode because Reuse runs on cloud workdirs that
+// the GC loop wipes wholesale, so per-file collision avoidance is
+// irrelevant.
 func recordWriteFile(path string, data []byte, perm os.FileMode, m *sidecarManifest) error {
 	if m == nil {
 		return os.WriteFile(path, data, perm)
 	}
 	_, statErr := os.Lstat(path)
-	preExisted := statErr == nil
-	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+	if statErr == nil {
+		// Any existing entry — regular file, symlink, directory —
+		// is a collision. Refuse to touch it.
+		return fmt.Errorf("%w: %s", errPathPreExists, path)
+	}
+	if !errors.Is(statErr, fs.ErrNotExist) {
 		return fmt.Errorf("stat target %s: %w", path, statErr)
 	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return err
 	}
-	if !preExisted {
-		m.Files = append(m.Files, path)
-	}
+	m.Files = append(m.Files, path)
 	return nil
+}
+
+// allocateCollisionFreeSkillDir picks a directory under skillsParent
+// whose path does NOT currently exist, so writeSkillFiles can lay
+// down a Multica skill without colliding with a user-installed skill
+// of the same slug. The first attempt is always the natural baseSlug
+// — that's the path provider-native discovery already knows. On
+// collision we append `-multica`, then `-multica-2`, `-multica-3`,
+// … until a free slot is found. The chosen slug is returned alongside
+// the absolute path so callers can use it in frontmatter and brief
+// listings.
+//
+// The collision-free fallback name is still a sibling under the same
+// skillsParent, so provider-native discovery still picks the skill up
+// (each subdir under .claude/skills/ etc. is scanned independently).
+// The user's directory at baseSlug is left bit-for-bit intact.
+//
+// The probe is bounded to a small ceiling — a user with thousands of
+// collisions on the same slug indicates an upstream bug, not a
+// realistic state. Returning an error in that case forces the caller
+// to surface the problem instead of looping forever.
+func allocateCollisionFreeSkillDir(skillsParent, baseSlug string) (slug, dir string, err error) {
+	const maxAttempts = 64
+	for i := 0; i < maxAttempts; i++ {
+		var candidate string
+		switch {
+		case i == 0:
+			candidate = baseSlug
+		case i == 1:
+			candidate = baseSlug + "-multica"
+		default:
+			candidate = fmt.Sprintf("%s-multica-%d", baseSlug, i)
+		}
+		path := filepath.Join(skillsParent, candidate)
+		if _, statErr := os.Lstat(path); statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				return candidate, path, nil
+			}
+			return "", "", fmt.Errorf("stat candidate %s: %w", path, statErr)
+		}
+	}
+	return "", "", fmt.Errorf("allocate collision-free skill dir under %s: exhausted %d attempts for base %q", skillsParent, maxAttempts, baseSlug)
 }
 
 // writeSidecarManifest persists m to {envRoot}/{sidecarManifestFile}.
@@ -147,22 +219,35 @@ func writeSidecarManifest(envRoot string, m *sidecarManifest) error {
 
 // CleanupSidecars rolls the user's workdir back to its pre-Prepare
 // state by removing every file the manifest at envRoot records and
-// then rmdir-ing every directory it records, deepest first. A
-// directory the user has populated since (sibling content, a manually
-// added file) is left in place because rmdir on a non-empty directory
-// fails ENOTEMPTY; we treat that as "user owns this — stop here" and
-// move on without an error.
+// then rmdir-ing every directory it records, deepest first.
+//
+// Two failure modes the function deliberately swallows:
+//
+//   - ENOENT on a recorded path. The file or directory was already
+//     gone — either the user removed it during the task, or a prior
+//     Cleanup run on the same envRoot already cleared it. Either
+//     way there is nothing left for this call to do.
+//   - Non-empty directory on rmdir. The user has populated a
+//     directory we created (added a sibling file under .claude/
+//     skills/, for example) and rmdir-ing would destroy that
+//     content. We detect this by re-reading the directory after
+//     rmdir fails: a non-empty listing means "user owns this — stop
+//     here." This is the must-fix from PR #3444 review — the
+//     previous version swallowed ANY non-ENOENT rmdir error as
+//     "non-empty," which silently dropped real I/O failures
+//     (EACCES, EPERM, EBUSY) and made cleanup look successful when
+//     it wasn't.
+//
+// All other errors — ReadFile failure, JSON parse failure, real
+// EACCES/EPERM/EIO during file deletion, real EACCES/EPERM/EIO
+// during dir removal — are captured into firstErr and surfaced to
+// the caller. Cleanup still continues for the remaining manifest
+// entries so a single bad path does not strand the rest of the
+// rollback.
 //
 // The function is a no-op when:
 //   - envRoot is empty (no daemon scratch for this task),
-//   - the manifest file is missing (older build, or Prepare did not run),
-//   - the manifest is empty (nothing to undo).
-//
-// Best-effort by design: missing files and ENOTEMPTY rmdir failures are
-// silently swallowed. A genuine I/O error on a recorded path (permission
-// denied, busy filesystem) is returned as the first error encountered,
-// but cleanup continues for the rest so a single bad path can't strand
-// the manifest.
+//   - the manifest file is missing (older build, or Prepare did not run).
 //
 // Pair this with CleanupRuntimeConfig on the local_directory cleanup
 // path: that function handles the runtime brief inside CLAUDE.md /
@@ -202,20 +287,28 @@ func CleanupSidecars(envRoot string) error {
 		}
 	}
 
-	// Reverse iterate so the deepest directory is tried first. A
-	// directory the user has filled with their own content fails
-	// rmdir with a non-ENOENT, non-clean error — that's the signal
-	// "this directory still has user content" and we leave it alone
-	// without surfacing an error.
+	// Reverse iterate so the deepest directory is tried first. When
+	// rmdir fails we re-stat the directory to tell ENOTEMPTY (user
+	// content present — skip silently) apart from real I/O errors
+	// (permission denied, busy, etc. — capture and surface).
 	for i := len(m.Dirs) - 1; i >= 0; i-- {
 		d := m.Dirs[i]
 		err := os.Remove(d)
 		if err == nil || errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		// errno-portable "directory not empty" check: any error other
-		// than ENOENT here means the user has populated the directory
-		// since Prepare ran. Skip silently.
+		if dirHasEntries(d) {
+			// User has populated this dir since Prepare ran. Leave
+			// it in place without surfacing the rmdir error — the
+			// whole point of the manifest design is to preserve
+			// user content under directories we created.
+			continue
+		}
+		// Empty directory but rmdir still failed → real I/O error
+		// (EACCES, EPERM, EBUSY, EIO, or a directory we mistakenly
+		// recorded that we don't actually own). Surface it so the
+		// caller can log a warning and an operator can investigate.
+		captureErr(fmt.Errorf("rmdir %s: %w", d, err))
 	}
 
 	if err := os.Remove(manifestPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -223,4 +316,23 @@ func CleanupSidecars(envRoot string) error {
 	}
 
 	return firstErr
+}
+
+// dirHasEntries reports whether dir currently contains any entries.
+// CleanupSidecars uses it to distinguish ENOTEMPTY (silently skip) from
+// genuine rmdir failures (surface as an error). A directory that
+// disappeared between rmdir and readdir is reported as empty so the
+// race collapses into the "no work to do" branch rather than spurious
+// failures. Any other readdir error is reported as non-empty so the
+// caller surfaces the original rmdir error rather than silently
+// swallowing it — we'd rather over-report errors than under-report.
+func dirHasEntries(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		return true
+	}
+	return len(entries) > 0
 }

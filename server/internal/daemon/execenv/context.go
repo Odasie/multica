@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -38,7 +39,17 @@ func writeContextFiles(workDir, provider string, ctx TaskContextForEnv, manifest
 	content := renderIssueContext(provider, ctx)
 	path := filepath.Join(contextDir, "issue_context.md")
 	if err := recordWriteFile(path, []byte(content), 0o644, manifest); err != nil {
-		return fmt.Errorf("write issue_context.md: %w", err)
+		// A pre-existing path means the user already owns
+		// .agent_context/issue_context.md — either they created it
+		// themselves or it survived from a crashed prior run we can't
+		// safely distinguish from intentional content. Refusing the
+		// write is the correct call: the runtime brief (CLAUDE.md /
+		// AGENTS.md / GEMINI.md) already carries every fact this file
+		// would, so the agent runs fine without the sidecar copy.
+		// Anything else is a real failure.
+		if !errors.Is(err, errPathPreExists) {
+			return fmt.Errorf("write issue_context.md: %w", err)
+		}
 	}
 
 	if len(ctx.AgentSkills) > 0 {
@@ -125,7 +136,17 @@ func writeProjectResources(workDir string, ctx TaskContextForEnv, manifest *side
 	if err != nil {
 		return err
 	}
-	return recordWriteFile(filepath.Join(dir, "resources.json"), data, 0o644, manifest)
+	if err := recordWriteFile(filepath.Join(dir, "resources.json"), data, 0o644, manifest); err != nil {
+		// .multica/project/resources.json is Multica-owned and a
+		// pre-existing path is almost certainly user content the
+		// manifest must not destroy. The runtime brief already lists
+		// every project resource so the agent runs fine without the
+		// JSON sidecar — collision degrades to brief-only mode.
+		if !errors.Is(err, errPathPreExists) {
+			return err
+		}
+	}
+	return nil
 }
 
 // resolveSkillsDir returns the directory where skills should be written
@@ -304,25 +325,46 @@ func sanitizeSkillName(name string) string {
 // directory and file so CleanupSidecars can remove them on
 // local_directory teardown without touching user-owned skill directories
 // that happen to live alongside ours under the same skills/ parent.
+//
+// When a Multica skill's natural slug collides with a user-installed
+// skill at the same path, we allocate a collision-free sibling slug
+// (e.g. `issue-review-multica`) and write there instead. Provider-native
+// discovery still picks it up because every subdir under skillsDir is a
+// distinct skill; the user's original directory stays bit-for-bit
+// intact. Without this fallback writeSkillFiles would have to either
+// overwrite user bytes (the bug PR #3444 review caught) or skip the
+// skill entirely (which would silently drop a Multica skill the agent
+// expects to see).
 func writeSkillFiles(skillsDir string, skills []SkillContextForEnv, manifest *sidecarManifest) error {
 	if err := recordMkdirAll(skillsDir, 0o755, manifest); err != nil {
 		return fmt.Errorf("create skills dir: %w", err)
 	}
 
 	for _, skill := range skills {
-		slug := sanitizeSkillName(skill.Name)
-		dir := filepath.Join(skillsDir, slug)
+		baseSlug := sanitizeSkillName(skill.Name)
+		slug, dir, err := allocateCollisionFreeSkillDir(skillsDir, baseSlug)
+		if err != nil {
+			return fmt.Errorf("allocate skill dir for %q: %w", skill.Name, err)
+		}
 		if err := recordMkdirAll(dir, 0o755, manifest); err != nil {
 			return err
 		}
 
-		// Write main SKILL.md
+		// ensureSkillFrontmatter synthesises a `name:` value when the
+		// upstream skill is missing one. Use the chosen slug (which
+		// may differ from baseSlug on collision) so the YAML name
+		// matches the directory name; runtimes that key on either
+		// stay consistent.
 		body := ensureSkillFrontmatter(skill.Content, slug, skill.Description)
 		if err := recordWriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644, manifest); err != nil {
 			return err
 		}
 
-		// Write supporting files
+		// Write supporting files. The skill directory is collision-
+		// free by construction, so a recordWriteFile collision under
+		// it would mean the skill's bundled files list two entries
+		// at the same path — that's an upstream data bug, not a
+		// user-content collision, and we surface it.
 		for _, f := range skill.Files {
 			fpath := filepath.Join(dir, f.Path)
 			if err := recordMkdirAll(filepath.Dir(fpath), 0o755, manifest); err != nil {
