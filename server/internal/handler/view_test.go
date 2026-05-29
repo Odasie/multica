@@ -1,0 +1,221 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+func createViewAs(t *testing.T, userID string, body map[string]any) (*httptest.ResponseRecorder, ViewResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	testHandler.CreateView(w, newRequestAs(userID, "POST", "/api/views", body))
+	var resp ViewResponse
+	if w.Code == http.StatusCreated {
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode create view: %v", err)
+		}
+		t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM saved_view WHERE id = $1`, resp.ID) })
+	}
+	return w, resp
+}
+
+func listViews(t *testing.T, query string) []ViewResponse {
+	t.Helper()
+	w := httptest.NewRecorder()
+	testHandler.ListViews(w, newRequest("GET", "/api/views?"+query, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListViews(%s): expected 200, got %d: %s", query, w.Code, w.Body.String())
+	}
+	var resp struct {
+		Views []ViewResponse `json:"views"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode list views: %v", err)
+	}
+	return resp.Views
+}
+
+func TestCreateAndListView(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	name := fmt.Sprintf("My High Pri %d", time.Now().UnixNano())
+	w, view := createViewAs(t, testUserID, map[string]any{
+		"name":    name,
+		"page":    "issues",
+		"filters": map[string]any{"priorities": []string{"high"}},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateView: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if view.Name != name || view.Page != "issues" {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+	if got, ok := view.Filters["priorities"].([]any); !ok || len(got) != 1 || got[0] != "high" {
+		t.Fatalf("filters not round-tripped: %+v", view.Filters)
+	}
+
+	views := listViews(t, "page=issues")
+	found := false
+	for _, v := range views {
+		if v.ID == view.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("created view %s not in list", view.ID)
+	}
+}
+
+func TestCreateViewValidation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ts := time.Now().UnixNano()
+
+	// invalid page
+	w, _ := createViewAs(t, testUserID, map[string]any{"name": fmt.Sprintf("a%d", ts), "page": "bogus"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid page: expected 400, got %d", w.Code)
+	}
+	// project page without project_id
+	w, _ = createViewAs(t, testUserID, map[string]any{"name": fmt.Sprintf("b%d", ts), "page": "project"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("project page without project_id: expected 400, got %d", w.Code)
+	}
+	// unknown filter key
+	w, _ = createViewAs(t, testUserID, map[string]any{
+		"name": fmt.Sprintf("c%d", ts), "page": "issues",
+		"filters": map[string]any{"bogus_key": []string{"x"}},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown filter key: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	// duplicate name in same scope
+	name := fmt.Sprintf("dup%d", ts)
+	w, _ = createViewAs(t, testUserID, map[string]any{"name": name, "page": "issues"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	w, _ = createViewAs(t, testUserID, map[string]any{"name": name, "page": "issues"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate name: expected 409, got %d", w.Code)
+	}
+}
+
+func TestUpdateView(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, view := createViewAs(t, testUserID, map[string]any{
+		"name": fmt.Sprintf("upd%d", time.Now().UnixNano()), "page": "issues",
+	})
+	newName := "renamed"
+	w := httptest.NewRecorder()
+	testHandler.UpdateView(w, withURLParam(newRequestAs(testUserID, "PUT", "/api/views/"+view.ID, map[string]any{
+		"name":    newName,
+		"filters": map[string]any{"statuses": []string{"todo"}},
+	}), "id", view.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateView: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var updated ViewResponse
+	_ = json.NewDecoder(w.Body).Decode(&updated)
+	if updated.Name != newName {
+		t.Fatalf("name not updated: %+v", updated)
+	}
+	if _, ok := updated.Filters["statuses"]; !ok {
+		t.Fatalf("filters not updated: %+v", updated.Filters)
+	}
+}
+
+func TestDeleteView(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, view := createViewAs(t, testUserID, map[string]any{
+		"name": fmt.Sprintf("del%d", time.Now().UnixNano()), "page": "issues",
+	})
+	w := httptest.NewRecorder()
+	testHandler.DeleteView(w, withURLParam(newRequestAs(testUserID, "DELETE", "/api/views/"+view.ID, nil), "id", view.ID))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteView: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	for _, v := range listViews(t, "page=issues") {
+		if v.ID == view.ID {
+			t.Fatalf("view %s still listed after delete", view.ID)
+		}
+	}
+}
+
+func TestDeleteDefaultViewForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	var id string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO saved_view (workspace_id, creator_id, name, page, is_default)
+		VALUES ($1, $2, $3, 'issues', true) RETURNING id
+	`, testWorkspaceID, testUserID, fmt.Sprintf("default%d", time.Now().UnixNano())).Scan(&id); err != nil {
+		t.Fatalf("seed default view: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM saved_view WHERE id = $1`, id) })
+
+	w := httptest.NewRecorder()
+	testHandler.DeleteView(w, withURLParam(newRequestAs(testUserID, "DELETE", "/api/views/"+id, nil), "id", id))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("delete default view: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateViewForbiddenForNonCreatorMember(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	// A plain member who didn't create the view and isn't an admin can't edit it.
+	f := seedIssueFilterFixture(t) // f.otherUserID is a plain 'member'
+	_, view := createViewAs(t, testUserID, map[string]any{
+		"name": fmt.Sprintf("perm%d", time.Now().UnixNano()), "page": "issues",
+	})
+	w := httptest.NewRecorder()
+	testHandler.UpdateView(w, withURLParam(newRequestAs(f.otherUserID, "PUT", "/api/views/"+view.ID, map[string]any{
+		"name": "hijack",
+	}), "id", view.ID))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("non-creator member update: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestReorderViews(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ts := time.Now().UnixNano()
+	_, v1 := createViewAs(t, testUserID, map[string]any{"name": fmt.Sprintf("r1-%d", ts), "page": "my_issues"})
+	_, v2 := createViewAs(t, testUserID, map[string]any{"name": fmt.Sprintf("r2-%d", ts), "page": "my_issues"})
+	_, v3 := createViewAs(t, testUserID, map[string]any{"name": fmt.Sprintf("r3-%d", ts), "page": "my_issues"})
+
+	// Reorder to v3, v1, v2.
+	w := httptest.NewRecorder()
+	testHandler.ReorderViews(w, newRequestAs(testUserID, "PUT", "/api/views/reorder", map[string]any{
+		"ids": []string{v3.ID, v1.ID, v2.ID},
+	}))
+	if w.Code != http.StatusNoContent && w.Code != http.StatusOK {
+		t.Fatalf("ReorderViews: expected 200/204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	views := listViews(t, "page=my_issues")
+	pos := map[string]int{}
+	for i, v := range views {
+		pos[v.ID] = i
+	}
+	if !(pos[v3.ID] < pos[v1.ID] && pos[v1.ID] < pos[v2.ID]) {
+		t.Fatalf("reorder not reflected in list order: v1=%d v2=%d v3=%d", pos[v1.ID], pos[v2.ID], pos[v3.ID])
+	}
+}
