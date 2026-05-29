@@ -81,7 +81,7 @@ func TestRegistrationClient_Begin_HappyPath(t *testing.T) {
 	})
 
 	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
-	res, err := c.Begin(context.Background())
+	res, err := c.Begin(context.Background(), "Ada - Multica")
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -113,6 +113,37 @@ func TestRegistrationClient_Begin_HappyPath(t *testing.T) {
 	if !strings.HasPrefix(q.Get("source"), "go-sdk/multica") {
 		t.Errorf("qr source=%q want go-sdk/multica", q.Get("source"))
 	}
+	// The name preset pre-fills the Lark PersonalAgent creation form so
+	// the bot defaults to "<agent> - Multica" rather than the
+	// auto-generated "{用户姓名}的智能助手".
+	if q.Get("name") != "Ada - Multica" {
+		t.Errorf("qr name=%q want %q", q.Get("name"), "Ada - Multica")
+	}
+}
+
+// TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty pins that an
+// empty preset leaves the `name` param off the QR URL entirely (rather
+// than emitting name= and pre-filling a blank), so the begin path is
+// unchanged when no preset is supplied.
+func TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.stubBegin(map[string]any{
+		"device_code":               "dc_noname",
+		"verification_uri_complete": "https://accounts.feishu.cn/oauth/v1/qrcode?code=abc",
+	})
+
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	res, err := c.Begin(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	u, err := url.Parse(res.QRCodeURL)
+	if err != nil {
+		t.Fatalf("QRCodeURL: %v", err)
+	}
+	if _, ok := u.Query()["name"]; ok {
+		t.Errorf("qr URL should omit name when preset empty, got %q", res.QRCodeURL)
+	}
 }
 
 func TestRegistrationClient_Begin_DefaultsWhenServerOmitsTimers(t *testing.T) {
@@ -128,7 +159,7 @@ func TestRegistrationClient_Begin_DefaultsWhenServerOmitsTimers(t *testing.T) {
 	})
 
 	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
-	res, err := c.Begin(context.Background())
+	res, err := c.Begin(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -147,7 +178,7 @@ func TestRegistrationClient_Begin_LarkError(t *testing.T) {
 		"error_description": "missing archetype",
 	})
 	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
-	_, err := c.Begin(context.Background())
+	_, err := c.Begin(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error from Lark error response")
 	}
@@ -167,7 +198,7 @@ func TestRegistrationClient_Begin_HTTPNon2xx(t *testing.T) {
 		_, _ = w.Write([]byte("server boom"))
 	})
 	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
-	_, err := c.Begin(context.Background())
+	_, err := c.Begin(context.Background(), "")
 	if err == nil {
 		t.Fatal("want error on 500")
 	}

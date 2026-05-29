@@ -68,6 +68,24 @@ func TestRegistrationServiceConstructorValidatesDeps(t *testing.T) {
 	}
 }
 
+// TestBotNamePreset pins the bot-name pre-fill format that rides on the
+// QR URL: "<agent> - Multica", with a blank agent name degrading to
+// plain "Multica" rather than a dangling " - Multica".
+func TestBotNamePreset(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Ada", "Ada - Multica"},
+		{"  Ada  ", "Ada - Multica"},
+		{"产品助手", "产品助手 - Multica"},
+		{"", "Multica"},
+		{"   ", "Multica"},
+	}
+	for _, tc := range cases {
+		if got := botNamePreset(tc.in); got != tc.want {
+			t.Errorf("botNamePreset(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestRegistrationGetSessionNotFound pins both halves of the
 // not-found path: unknown session id, and (the security-critical one)
 // known session id but from a different workspace. Both must surface

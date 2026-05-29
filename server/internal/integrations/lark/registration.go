@@ -211,7 +211,14 @@ func (e *RegistrationError) Error() string {
 // (mainland) domain. Lark may surface a Lark-international tenant on
 // the FIRST poll — we don't try to predict it here; the polling loop
 // in RegistrationService handles the domain swap.
-func (c *RegistrationClient) Begin(ctx context.Context) (*BeginResult, error) {
+//
+// namePreset pre-fills the bot/app name on Lark's "create a
+// PersonalAgent" form so the installed bot defaults to e.g.
+// "<agent> - Multica" instead of Lark's auto-generated
+// "{用户姓名}的智能助手". It is a user-editable default (the user can
+// still change it on the form), and it rides on the QR URL — not the
+// begin POST body, which has no name field. Empty omits the pre-fill.
+func (c *RegistrationClient) Begin(ctx context.Context, namePreset string) (*BeginResult, error) {
 	var resp struct {
 		DeviceCode              string `json:"device_code"`
 		VerificationURIComplete string `json:"verification_uri_complete"`
@@ -240,7 +247,7 @@ func (c *RegistrationClient) Begin(ctx context.Context) (*BeginResult, error) {
 	if resp.VerificationURIComplete == "" {
 		return nil, &RegistrationError{Code: "invalid_response", Description: "verification_uri_complete is empty"}
 	}
-	qr, err := decorateQRCodeURL(resp.VerificationURIComplete, c.cfg.Source)
+	qr, err := decorateQRCodeURL(resp.VerificationURIComplete, c.cfg.Source, namePreset)
 	if err != nil {
 		return nil, &RegistrationError{Code: "invalid_response", Description: "verification_uri_complete is not a URL: " + err.Error()}
 	}
@@ -385,7 +392,13 @@ func (c *RegistrationClient) doForm(ctx context.Context, domain string, form url
 // on the QR-image URL. Without `from=sdk&tp=sdk&source=<src>` the
 // scanner UI on the user's phone shows a less polished prompt and Lark
 // cannot attribute installs back to Multica in their analytics.
-func decorateQRCodeURL(raw, source string) (string, error) {
+//
+// namePreset, when non-empty, is appended as `name=<...>` to pre-fill
+// the bot/app name on Lark's "create a PersonalAgent" form. This
+// mirrors the upstream SDK's AppPreset.Name: Lark reads it from the
+// verification/QR URL (the begin POST body carries no name field) and
+// treats it as a user-editable default, not a locked final name.
+func decorateQRCodeURL(raw, source, namePreset string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", err
@@ -394,6 +407,9 @@ func decorateQRCodeURL(raw, source string) (string, error) {
 	q.Set("from", "sdk")
 	q.Set("tp", "sdk")
 	q.Set("source", "go-sdk/"+source)
+	if namePreset != "" {
+		q.Set("name", namePreset)
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }

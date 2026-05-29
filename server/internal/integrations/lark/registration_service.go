@@ -271,14 +271,19 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 	// by guessing the UUID, and the device_code minted against Lark
 	// would still produce credentials. The handler does the same
 	// check; doing it here too keeps the service self-defending.
-	if _, err := s.authQueries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+	//
+	// We keep the agent: its name pre-fills the bot name on Lark's
+	// PersonalAgent creation form (see botNamePreset) so the installed
+	// bot reads "<agent> - Multica" instead of "{用户姓名}的智能助手".
+	agent, err := s.authQueries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
 		ID:          p.AgentID,
 		WorkspaceID: p.WorkspaceID,
-	}); err != nil {
+	})
+	if err != nil {
 		return BeginInstallResult{}, fmt.Errorf("lark registration: agent not in workspace: %w", err)
 	}
 
-	begin, err := s.client.Begin(ctx)
+	begin, err := s.client.Begin(ctx, botNamePreset(agent.Name))
 	if err != nil {
 		return BeginInstallResult{}, fmt.Errorf("lark registration: begin: %w", err)
 	}
@@ -545,6 +550,21 @@ func uuidEqual(a, b pgtype.UUID) bool {
 		return false
 	}
 	return a.Bytes == b.Bytes
+}
+
+// botNamePreset builds the display name we pre-fill on Lark's
+// PersonalAgent creation form so the installed bot reads
+// "<agent> - Multica" instead of Lark's auto-generated
+// "{用户姓名}的智能助手". Lark treats this as a default the installer can
+// still edit; we never get to lock the final name. A blank agent name
+// (defensive — Agent.Name is NOT NULL in schema) degrades to plain
+// "Multica" rather than a dangling " - Multica".
+func botNamePreset(agentName string) string {
+	name := strings.TrimSpace(agentName)
+	if name == "" {
+		return "Multica"
+	}
+	return name + " - Multica"
 }
 
 // uuidString is the package-local UUID-to-string helper defined in
