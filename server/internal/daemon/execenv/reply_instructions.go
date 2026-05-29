@@ -42,16 +42,20 @@ func BuildNewCommentsHint(issueID, triggerCommentID, newCommentsSince string, ne
 // BuildResumedCommentsHint returns the comment-reading pointer for the WARM
 // no-delta path: the daemon is resuming a prior provider session and the
 // triggering comment body has already been injected into the per-turn prompt.
-// In that shape, reading the triggering thread's last 30 replies is duplicate
-// context by default. Keep the bounded thread read as an explicit fallback for
-// missing context instead of making it the first action.
+// In that shape, the zero-delta statement must be explicitly scoped to the
+// triggering thread, not the whole issue. Reading the triggering thread's last
+// 30 replies is duplicate context by default, so keep the bounded thread read
+// as an explicit fallback for missing context instead of making it the first
+// action.
 func BuildResumedCommentsHint(issueID, triggerCommentID string) string {
 	if issueID == "" || triggerCommentID == "" {
 		return ""
 	}
 	return fmt.Sprintf(
 		"You're resuming the prior session, and the triggering comment is already included above. "+
-			"Do not re-read comment history by default. "+
+			"Current-thread delta: 0 additional comments beyond the triggering comment. "+
+			"This is scoped to the triggering thread, not the whole issue. "+
+			"Do not re-read the triggering thread by default. "+
 			"Only if the resumed session is missing thread context, pull the triggering conversation: "+
 			"`multica issue comment list %s --thread %s --tail 30 --output json`.\n\n",
 		issueID, triggerCommentID,

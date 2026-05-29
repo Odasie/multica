@@ -381,7 +381,9 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 
 	for _, want := range []string{
 		"triggering comment is already included above",
-		"Do not re-read comment history by default",
+		"Current-thread delta: 0 additional comments beyond the triggering comment",
+		"This is scoped to the triggering thread, not the whole issue",
+		"Do not re-read the triggering thread by default",
 		"Only if the resumed session is missing thread context",
 		"multica issue comment list " + issueID + " --thread trigger-1 --tail 30 --output json",
 	} {
