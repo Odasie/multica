@@ -18,6 +18,7 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
 import { FILE_CARD_URL_PATTERN } from "@multica/ui/markdown";
+import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 import { Attachment } from "../attachment";
 
 const FILE_CARD_MARKDOWN_RE = new RegExp(
@@ -129,7 +130,7 @@ export const FileCardExtension = Node.create({
   },
   renderMarkdown: (node: any) => {
     const { href, filename } = node.attrs || {};
-    return `!file[${filename || "file"}](${href})`;
+    return `!file[${escapeMarkdownLabel(filename || "file")}](${href})`;
   },
 
   addNodeView() {
