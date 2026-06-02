@@ -296,6 +296,8 @@ func TestRunSkillFilesUpsertReadsContentFileVerbatim(t *testing.T) {
 }
 
 func TestRunSkillContentInputsAreMutuallyExclusive(t *testing.T) {
+	setSkillServerEnv(t, "http://127.0.0.1:1")
+
 	path := t.TempDir() + string(os.PathSeparator) + "SKILL.md"
 	if err := os.WriteFile(path, []byte("body"), 0o644); err != nil {
 		t.Fatalf("write tempfile: %v", err)
@@ -336,6 +338,8 @@ func TestRunSkillContentInputsAreMutuallyExclusive(t *testing.T) {
 }
 
 func TestRunSkillContentFileAndStdinRejectEmptyInput(t *testing.T) {
+	setSkillServerEnv(t, "http://127.0.0.1:1")
+
 	emptyPath := t.TempDir() + string(os.PathSeparator) + "empty.md"
 	if err := os.WriteFile(emptyPath, []byte(""), 0o644); err != nil {
 		t.Fatalf("write tempfile: %v", err)
