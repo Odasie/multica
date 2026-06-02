@@ -38,6 +38,8 @@ import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 import { BaseMentionExtension } from "./mention-extension";
 import { createMentionSuggestion } from "./mention-suggestion";
+import { SlashCommandExtension } from "./slash-command-extension";
+import { createSlashCommandSuggestion } from "./slash-command-suggestion";
 import { CodeBlockView } from "./code-block-view";
 import { PatchedListItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
@@ -105,6 +107,8 @@ export interface EditorExtensionsOptions {
    * system prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /** When true, attach the `/` skill picker. Default false. */
+  enableSlashCommands?: boolean;
 }
 
 export function createEditorExtensions(
@@ -153,6 +157,13 @@ export function createEditorExtensions(
         : options.queryClient
           ? { suggestion: createMentionSuggestion(options.queryClient) }
           : {}),
+    }),
+    SlashCommandExtension.configure({
+      HTMLAttributes: { class: "slash-command" },
+      suggestion:
+        options.enableSlashCommands && options.queryClient
+          ? createSlashCommandSuggestion(options.queryClient)
+          : { char: "/", allow: () => false },
     }),
     Typography,
     Placeholder.configure({ placeholder: placeholderText }),
