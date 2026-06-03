@@ -77,7 +77,8 @@
     "my_agents": "My agents",
     "others": "Others",
     "no_agents": "No agents",
-    "history_group": "Chat history"
+    "history_group": "Chat history",
+    "agent_filter_placeholder": "Search agents..."
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",

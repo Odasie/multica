@@ -8,15 +8,6 @@ import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@multica/ui/components/ui/dropdown-menu";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -29,6 +20,13 @@ import { api } from "@multica/core/api";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { ActorAvatar } from "../../common/actor-avatar";
+import {
+  PickerEmpty,
+  PickerItem,
+  PickerSection,
+  PropertyPicker,
+} from "../../issues/components/pickers/property-picker";
+import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import {
@@ -631,7 +629,7 @@ export function ChatWindow() {
  * different agent = switch agent + start a fresh chat (session=null).
  * The current agent is marked with a check and not clickable.
  */
-function AgentDropdown({
+export function AgentDropdown({
   agents,
   activeAgent,
   userId,
@@ -643,6 +641,8 @@ function AgentDropdown({
   onSelect: (agent: Agent) => void;
 }) {
   const { t } = useT("chat");
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
   // Split into the user's own agents and everyone else so the menu groups
   // them — matches the old AgentSelector layout.
   const { mine, others } = useMemo(() => {
@@ -655,57 +655,86 @@ function AgentDropdown({
     return { mine, others };
   }, [agents, userId]);
 
+  const query = filter.trim().toLowerCase();
+  const matches = (name: string) =>
+    !query || name.toLowerCase().includes(query) || matchesPinyin(name, query);
+  const filteredMine = mine.filter((agent) => matches(agent.name));
+  const filteredOthers = others.filter((agent) => matches(agent.name));
+
+  const handlePick = (agent: Agent) => {
+    onSelect(agent);
+    setOpen(false);
+  };
+
   if (!activeAgent) {
     return <span className="text-xs text-muted-foreground">{t(($) => $.window.no_agents)}</span>;
   }
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger className="flex items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1 cursor-pointer outline-none transition-colors hover:bg-accent aria-expanded:bg-accent">
-        <ActorAvatar
-          actorType="agent"
-          actorId={activeAgent.id}
-          size={24}
-          enableHoverCard
-          showStatusDot
+    <PropertyPicker
+      open={open}
+      onOpenChange={setOpen}
+      width="w-64"
+      align="start"
+      side="top"
+      searchable
+      searchPlaceholder={t(($) => $.window.agent_filter_placeholder)}
+      onSearchChange={setFilter}
+      triggerRender={
+        <button
+          type="button"
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1 cursor-pointer outline-none transition-colors hover:bg-accent aria-expanded:bg-accent"
         />
-        <span className="text-xs font-medium max-w-28 truncate">{activeAgent.name}</span>
-        <ChevronDown className="size-3 text-muted-foreground shrink-0" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="max-h-80 w-auto max-w-64">
-        {mine.length > 0 && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>{t(($) => $.window.my_agents)}</DropdownMenuLabel>
-            {mine.map((agent) => (
-              <AgentMenuItem
-                key={agent.id}
-                agent={agent}
-                isCurrent={agent.id === activeAgent.id}
-                onSelect={onSelect}
-              />
-            ))}
-          </DropdownMenuGroup>
-        )}
-        {mine.length > 0 && others.length > 0 && <DropdownMenuSeparator />}
-        {others.length > 0 && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>{t(($) => $.window.others)}</DropdownMenuLabel>
-            {others.map((agent) => (
-              <AgentMenuItem
-                key={agent.id}
-                agent={agent}
-                isCurrent={agent.id === activeAgent.id}
-                onSelect={onSelect}
-              />
-            ))}
-          </DropdownMenuGroup>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      }
+      trigger={
+        <>
+          <ActorAvatar
+            actorType="agent"
+            actorId={activeAgent.id}
+            size={24}
+            enableHoverCard
+            showStatusDot
+          />
+          <span className="text-xs font-medium max-w-28 truncate">{activeAgent.name}</span>
+          <ChevronDown className="size-3 text-muted-foreground shrink-0" />
+        </>
+      }
+    >
+      {filteredMine.length === 0 && filteredOthers.length === 0 ? (
+        <PickerEmpty />
+      ) : (
+        <>
+          {filteredMine.length > 0 && (
+            <PickerSection label={t(($) => $.window.my_agents)}>
+              {filteredMine.map((agent) => (
+                <AgentPickerItem
+                  key={agent.id}
+                  agent={agent}
+                  isCurrent={agent.id === activeAgent.id}
+                  onSelect={handlePick}
+                />
+              ))}
+            </PickerSection>
+          )}
+          {filteredOthers.length > 0 && (
+            <PickerSection label={t(($) => $.window.others)}>
+              {filteredOthers.map((agent) => (
+                <AgentPickerItem
+                  key={agent.id}
+                  agent={agent}
+                  isCurrent={agent.id === activeAgent.id}
+                  onSelect={handlePick}
+                />
+              ))}
+            </PickerSection>
+          )}
+        </>
+      )}
+    </PropertyPicker>
   );
 }
 
-function AgentMenuItem({
+function AgentPickerItem({
   agent,
   isCurrent,
   onSelect,
@@ -715,9 +744,9 @@ function AgentMenuItem({
   onSelect: (agent: Agent) => void;
 }) {
   return (
-    <DropdownMenuItem
+    <PickerItem
+      selected={isCurrent}
       onClick={() => onSelect(agent)}
-      className="flex min-w-0 items-center gap-2"
     >
       <ActorAvatar
         actorType="agent"
@@ -727,8 +756,7 @@ function AgentMenuItem({
         showStatusDot
       />
       <span className="truncate flex-1">{agent.name}</span>
-      {isCurrent && <Check className="size-3.5 text-muted-foreground shrink-0" />}
-    </DropdownMenuItem>
+    </PickerItem>
   );
 }
 

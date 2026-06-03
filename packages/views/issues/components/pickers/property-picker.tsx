@@ -29,6 +29,7 @@ export function PropertyPicker({
   triggerRender,
   width = "w-48",
   align = "end",
+  side = "bottom",
   searchable = false,
   searchPlaceholder,
   onSearchChange,
@@ -43,6 +44,7 @@ export function PropertyPicker({
   triggerRender?: React.ReactElement;
   width?: string;
   align?: "start" | "center" | "end";
+  side?: React.ComponentProps<typeof PopoverContent>["side"];
   searchable?: boolean;
   searchPlaceholder?: string | undefined;
   onSearchChange?: (query: string) => void;
@@ -160,7 +162,7 @@ export function PropertyPicker({
       ) : (
         popoverTrigger
       )}
-      <PopoverContent align={align} className={`${width} gap-0 p-0`}>
+      <PopoverContent align={align} side={side} className={`${width} gap-0 p-0`}>
         {searchable && (
           <div className="px-2 py-1.5 border-b">
             <input
