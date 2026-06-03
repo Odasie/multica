@@ -83,6 +83,16 @@ SELECT * FROM chat_message
 WHERE chat_session_id = $1
 ORDER BY created_at ASC;
 
+-- name: CountChatMessages :one
+SELECT count(*) FROM chat_message
+WHERE chat_session_id = $1;
+
+-- name: ListChatMessagesPage :many
+SELECT * FROM chat_message
+WHERE chat_session_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
 WHERE id = $1;

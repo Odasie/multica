@@ -194,3 +194,74 @@ func TestSendChatMessage_InvalidAttachmentIDs(t *testing.T) {
 		t.Fatalf("expected 0 chat_message rows after rejected send, got %d", count)
 	}
 }
+
+func TestListChatMessagesPage_PaginatesWithoutChangingLegacyList(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "ChatPaginationAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	for i, content := range []string{"oldest", "middle", "newest"} {
+		_, err := testPool.Exec(
+			context.Background(),
+			`INSERT INTO chat_message (chat_session_id, role, content, created_at)
+			 VALUES ($1, 'user', $2, timestamp '2026-01-01 00:00:00' + ($3::int * interval '1 second'))`,
+			sessionID,
+			content,
+			i,
+		)
+		if err != nil {
+			t.Fatalf("insert chat message %d: %v", i, err)
+		}
+	}
+
+	legacyReq := httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/messages", nil)
+	legacyReq.Header.Set("X-User-ID", testUserID)
+	legacyReq = withURLParam(legacyReq, "sessionId", sessionID)
+	legacyReq = withChatTestWorkspaceCtx(t, legacyReq)
+	legacyW := httptest.NewRecorder()
+	testHandler.ListChatMessages(legacyW, legacyReq)
+	if legacyW.Code != http.StatusOK {
+		t.Fatalf("ListChatMessages: expected 200, got %d: %s", legacyW.Code, legacyW.Body.String())
+	}
+	var legacy []ChatMessageResponse
+	if err := json.Unmarshal(legacyW.Body.Bytes(), &legacy); err != nil {
+		t.Fatalf("decode legacy messages: %v", err)
+	}
+	if len(legacy) != 3 || legacy[0].Content != "oldest" || legacy[2].Content != "newest" {
+		t.Fatalf("legacy messages = %#v", legacy)
+	}
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/messages/page?page=0&limit=2", nil)
+	pageReq.Header.Set("X-User-ID", testUserID)
+	pageReq = withURLParam(pageReq, "sessionId", sessionID)
+	pageReq = withChatTestWorkspaceCtx(t, pageReq)
+	pageW := httptest.NewRecorder()
+	testHandler.ListChatMessagesPage(pageW, pageReq)
+	if pageW.Code != http.StatusOK {
+		t.Fatalf("ListChatMessagesPage: expected 200, got %d: %s", pageW.Code, pageW.Body.String())
+	}
+	var page ChatMessagesPageResponse
+	if err := json.Unmarshal(pageW.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode page messages: %v", err)
+	}
+	if page.Page != 0 || page.Limit != 2 || page.TotalCount != 3 || !page.HasMore {
+		t.Fatalf("page metadata = %#v", page)
+	}
+	if page.FirstItemIndex != 1 || len(page.Messages) != 2 || page.Messages[0].Content != "middle" || page.Messages[1].Content != "newest" {
+		t.Fatalf("page messages = %#v", page)
+	}
+}
+
+func TestListChatMessagesPage_RejectsInvalidLimit(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "ChatPaginationBadLimitAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/messages/page?page=0&limit=0", nil)
+	req.Header.Set("X-User-ID", testUserID)
+	req = withURLParam(req, "sessionId", sessionID)
+	req = withChatTestWorkspaceCtx(t, req)
+	w := httptest.NewRecorder()
+	testHandler.ListChatMessagesPage(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ListChatMessagesPage invalid limit: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

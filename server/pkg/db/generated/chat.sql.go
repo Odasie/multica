@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countChatMessages = `-- name: CountChatMessages :one
+SELECT count(*) FROM chat_message
+WHERE chat_session_id = $1
+`
+
+func (q *Queries) CountChatMessages(ctx context.Context, chatSessionID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countChatMessages, chatSessionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createChatMessage = `-- name: CreateChatMessage :one
 INSERT INTO chat_message (chat_session_id, role, content, task_id, failure_reason, elapsed_ms)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -369,6 +381,48 @@ ORDER BY created_at ASC
 
 func (q *Queries) ListChatMessages(ctx context.Context, chatSessionID pgtype.UUID) ([]ChatMessage, error) {
 	rows, err := q.db.Query(ctx, listChatMessages, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatMessagesPage = `-- name: ListChatMessagesPage :many
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms FROM chat_message
+WHERE chat_session_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListChatMessagesPageParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	Limit         int32       `json:"limit"`
+	Offset        int32       `json:"offset"`
+}
+
+func (q *Queries) ListChatMessagesPage(ctx context.Context, arg ListChatMessagesPageParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatMessagesPage, arg.ChatSessionID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

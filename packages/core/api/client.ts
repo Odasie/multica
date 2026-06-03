@@ -61,6 +61,7 @@ import type {
   Attachment,
   ChatSession,
   ChatMessage,
+  ChatMessagesPage,
   ChatPendingTask,
   PendingChatTasksResponse,
   SendChatMessageResponse,
@@ -1587,6 +1588,17 @@ export class ApiClient {
 
   async listChatMessages(sessionId: string): Promise<ChatMessage[]> {
     return this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+  }
+
+  async listChatMessagesPage(
+    sessionId: string,
+    params: { page?: number; limit?: number } = {},
+  ): Promise<ChatMessagesPage> {
+    const page = params.page ?? 0;
+    const limit = params.limit ?? 50;
+    return this.fetch(
+      `/api/chat/sessions/${sessionId}/messages/page?page=${page}&limit=${limit}`,
+    );
   }
 
   async sendChatMessage(

@@ -55,6 +55,15 @@ export interface ChatMessage {
   elapsed_ms?: number | null;
 }
 
+export interface ChatMessagesPage {
+  messages: ChatMessage[];
+  page: number;
+  limit: number;
+  total_count: number;
+  has_more: boolean;
+  first_item_index: number;
+}
+
 export interface SendChatMessageResponse {
   message_id: string;
   task_id: string;
