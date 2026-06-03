@@ -419,21 +419,20 @@ func TestMergeEnvFiltersClaudeCodeVars(t *testing.T) {
 		"CLAUDE_CODE_ENTRYPOINT=cli",
 		"CLAUDE_CODE_EXECPATH=/opt/claude",
 		"CLAUDE_CODE_SESSION_ID=abc123",
-		"CLAUDE_CODE_TMPDIR=/tmp/claude-x",
 		"CLAUDE_CODE_SSE_PORT=9999",
 		"CLAUDECODEX=keep-me",
 		"CLAUDE_CODE_GIT_BASH_PATH=C:\\Program Files\\Git\\bin\\bash.exe",
 		"CLAUDE_CODE_USE_BEDROCK=1",
+		"CLAUDE_CODE_TMPDIR=/custom/tmp",
 	}, map[string]string{"FOO": "bar"})
 
 	// Internal runtime/session markers must be stripped so the child does not
-	// inherit the parent's identity, temp dir, or transport.
+	// inherit the parent's identity or transport.
 	filteredOut := []string{
 		"CLAUDECODE=1",
 		"CLAUDE_CODE_ENTRYPOINT=cli",
 		"CLAUDE_CODE_EXECPATH=/opt/claude",
 		"CLAUDE_CODE_SESSION_ID=abc123",
-		"CLAUDE_CODE_TMPDIR=/tmp/claude-x",
 		"CLAUDE_CODE_SSE_PORT=9999",
 	}
 	for _, entry := range env {
@@ -462,6 +461,11 @@ func TestMergeEnvFiltersClaudeCodeVars(t *testing.T) {
 	}
 	if !found["CLAUDE_CODE_USE_BEDROCK=1"] {
 		t.Fatalf("expected CLAUDE_CODE_USE_BEDROCK to be preserved, got %v", env)
+	}
+	// CLAUDE_CODE_TMPDIR is a documented user-configurable temp-dir override, not
+	// an internal per-session marker, so it must reach the child.
+	if !found["CLAUDE_CODE_TMPDIR=/custom/tmp"] {
+		t.Fatalf("expected CLAUDE_CODE_TMPDIR to be preserved, got %v", env)
 	}
 	if !found["FOO=bar"] {
 		t.Fatalf("expected extra env var to be appended, got %v", env)

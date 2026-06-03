@@ -593,22 +593,27 @@ func mergeEnv(base []string, extra map[string]string) []string {
 // isFilteredChildEnvKey reports whether an inherited env var is an internal
 // Claude Code runtime/session marker that must NOT leak into the spawned child
 // (otherwise the child mistakes itself for a nested or resumed session, or
-// reuses the parent's temp dir / exec path).
+// inherits the parent's exec path / transport).
 //
 // It must NOT strip the user-facing CLAUDE_CODE_* configuration namespace
 // (CLAUDE_CODE_GIT_BASH_PATH, CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX,
-// CLAUDE_CODE_MAX_OUTPUT_TOKENS, ...): users set those deliberately and the
-// child needs them. Blanket-stripping the whole prefix is what broke Windows —
-// CLAUDE_CODE_GIT_BASH_PATH was silently removed, so Claude Code could not find
-// bash.exe and exited immediately. Strip internal markers by exact name and let
-// every other CLAUDE_CODE_* var through.
+// CLAUDE_CODE_MAX_OUTPUT_TOKENS, CLAUDE_CODE_TMPDIR, ...): users set those
+// deliberately and the child needs them. Blanket-stripping the whole prefix is
+// what broke Windows — CLAUDE_CODE_GIT_BASH_PATH was silently removed, so Claude
+// Code could not find bash.exe and exited immediately. Strip internal markers by
+// exact name and let every other CLAUDE_CODE_* var through.
+//
+// The denylist holds only undocumented, per-process runtime markers. Anything in
+// the public env-vars reference (https://code.claude.com/docs/en/env-vars) is
+// user config and stays out of this list — including CLAUDE_CODE_TMPDIR, a
+// documented temp-dir override under which Claude Code creates its own
+// per-session subdir, so inheriting it is harmless.
 func isFilteredChildEnvKey(key string) bool {
 	switch key {
 	case "CLAUDECODE", // "1" when running inside Claude Code
 		"CLAUDE_CODE_ENTRYPOINT", // entrypoint marker (cli/sdk-cli/...)
 		"CLAUDE_CODE_EXECPATH",   // path to the running CLI binary
 		"CLAUDE_CODE_SESSION_ID", // per-session identifier
-		"CLAUDE_CODE_TMPDIR",     // per-session temp dir
 		"CLAUDE_CODE_SSE_PORT":   // IDE-extension transport port
 		return true
 	}
