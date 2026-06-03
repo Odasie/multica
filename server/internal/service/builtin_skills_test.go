@@ -404,6 +404,111 @@ func TestSquadsSkillCoversLeaderRoutingContract(t *testing.T) {
 	}
 }
 
+func TestAutopilotsSkillCoversDispatchAndSideEffects(t *testing.T) {
+	skill, ok := findSkill(t, "multica-autopilots")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"An autopilot is not an agent",
+		"create_issue",
+		"run_only",
+		"multica autopilot trigger-add <autopilot-id> --kind schedule",
+		"multica autopilot trigger <autopilot-id> --output json",
+		"Do not run `trigger`",
+		"webhook tokens",
+		"{{date}}",
+		"squad's leader agent",
+		"references/autopilots-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("autopilots skill missing %q", want)
+		}
+	}
+	if !skillHasFile(skill, "references/autopilots-source-map.md") {
+		t.Errorf("autopilots skill missing supporting file references/autopilots-source-map.md")
+	}
+}
+
+func TestRuntimesAndReposSkillCoversClaimAndCheckoutChain(t *testing.T) {
+	skill, ok := findSkill(t, "multica-runtimes-and-repos")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"agent_task_queue",
+		"daemon polls/claims the task",
+		"multica runtime list --output json",
+		"multica repo checkout <url>",
+		"MULTICA_DAEMON_PORT",
+		"github_repo",
+		"local_directory",
+		"Runtime and repo commands affect active agent execution",
+		"references/runtimes-and-repos-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("runtimes-and-repos skill missing %q", want)
+		}
+	}
+	if !skillHasFile(skill, "references/runtimes-and-repos-source-map.md") {
+		t.Errorf("runtimes-and-repos skill missing supporting file references/runtimes-and-repos-source-map.md")
+	}
+}
+
+func TestProjectsAndResourcesSkillCoversDurableContext(t *testing.T) {
+	skill, ok := findSkill(t, "multica-projects-and-resources")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"Projects are durable context containers",
+		".multica/project/resources.json",
+		"multica project resource list <project-id> --output json",
+		"multica project resource add <project-id> --type github_repo --url <github-url> --output json",
+		"multica project resource add <project-id> --type local_directory",
+		"Do not add a resource just because you need a one-off checkout",
+		"github_repo.resource_ref.url",
+		"references/projects-and-resources-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("projects-and-resources skill missing %q", want)
+		}
+	}
+	if !skillHasFile(skill, "references/projects-and-resources-source-map.md") {
+		t.Errorf("projects-and-resources skill missing supporting file references/projects-and-resources-source-map.md")
+	}
+}
+
 func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	t.Helper()
 	for _, s := range loadBuiltinSkills() {
