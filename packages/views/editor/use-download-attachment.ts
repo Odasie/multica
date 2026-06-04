@@ -3,6 +3,7 @@
 import { useCallback } from "react";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
+import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { useT } from "../i18n";
 
 interface DesktopBridge {
@@ -49,14 +50,23 @@ export function useDownloadAttachment(): (attachmentId: string) => Promise<void>
       if (hasDesktopDownloadBridge()) {
         try {
           const fresh = await api.getAttachment(attachmentId);
-          if (!fresh.download_url) {
+          // Server may return a server-relative `download_url`
+          // (`/api/attachments/{id}/download`) when no CloudFront
+          // signer is configured — the unified download endpoint chooses
+          // CloudFront/presign/proxy at request time. Electron's main-side
+          // `downloadURLSafely` requires `new URL()` to parse to http/https,
+          // so resolve against the configured API base before we cross the
+          // bridge. Absolute URLs (legacy CloudFront / S3 presigned) pass
+          // through unchanged.
+          const downloadUrl = resolvePublicFileUrl(fresh.download_url);
+          if (!downloadUrl) {
             failed();
             return;
           }
           const bridge = (
             window as unknown as { desktopAPI?: DesktopBridge }
           ).desktopAPI;
-          await bridge!.downloadURL!(fresh.download_url);
+          await bridge!.downloadURL!(downloadUrl);
         } catch {
           failed();
         }
@@ -72,17 +82,26 @@ export function useDownloadAttachment(): (attachmentId: string) => Promise<void>
         : null;
       try {
         const fresh = await api.getAttachment(attachmentId);
-        if (!fresh.download_url) {
+        // Same relative-URL handling as desktop above. For web the
+        // `apiBaseUrl` is typically empty (same-origin), so `resolvePublicFileUrl`
+        // returns the path unchanged and the browser resolves it against
+        // the page's origin — the existing same-origin behaviour. When a
+        // non-empty base is configured (e.g. tauri/standalone shells that
+        // bundle the SPA but talk to a remote API), the resolver yields an
+        // absolute URL, which works for both `placeholder.location.href`
+        // and the last-resort `window.location.href` redirect.
+        const downloadUrl = resolvePublicFileUrl(fresh.download_url);
+        if (!downloadUrl) {
           placeholder?.close();
           failed();
           return;
         }
         if (placeholder) {
           placeholder.opener = null;
-          placeholder.location.href = fresh.download_url;
+          placeholder.location.href = downloadUrl;
         } else if (typeof window !== "undefined") {
           // Popup blocked outright — last-resort navigate the current tab.
-          window.location.href = fresh.download_url;
+          window.location.href = downloadUrl;
         }
       } catch {
         placeholder?.close();

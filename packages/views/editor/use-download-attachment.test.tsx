@@ -4,9 +4,10 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 // Hoisted mock for the API singleton: vi.mock factories cannot reference
 // outside-of-scope vars, but vi.hoisted runs before the import graph.
 const getAttachmentMock = vi.hoisted(() => vi.fn());
+const getBaseUrlMock = vi.hoisted(() => vi.fn(() => ""));
 
 vi.mock("@multica/core/api", () => ({
-  api: { getAttachment: getAttachmentMock },
+  api: { getAttachment: getAttachmentMock, getBaseUrl: getBaseUrlMock },
 }));
 
 vi.mock("sonner", () => ({
@@ -25,6 +26,10 @@ const SIGNED_URL =
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: web with same-origin API (empty base). Each test that needs
+  // a non-empty base (desktop standalone, server-relative download URL)
+  // overrides via getBaseUrlMock.mockReturnValue(...).
+  getBaseUrlMock.mockReturnValue("");
 });
 
 afterEach(() => {
@@ -117,5 +122,82 @@ describe("useDownloadAttachment (desktop)", () => {
 
     expect(downloadURL).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
+  });
+
+  // MUL-2976: when the backend has no CloudFront signer, `getAttachment`
+  // returns a server-relative `download_url` like `/api/attachments/.../download`.
+  // The Electron main-process `downloadURLSafely` requires a parsable
+  // http(s) URL or it drops the request — so the renderer must resolve
+  // the path against the configured API base before crossing the bridge.
+  it("resolves a server-relative download_url against the API base before handing it to the desktop bridge", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "https://static.example.test/file.md",
+      download_url: "/api/attachments/att-1/download",
+      filename: "file.md",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/download",
+    );
+  });
+
+  it("trims a trailing slash on the API base when resolving a relative download_url", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test/");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "/api/attachments/att-1/content",
+      download_url: "/api/attachments/att-1/download",
+      filename: "file.md",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/download",
+    );
+  });
+
+  it("passes an already-absolute download_url through unchanged when the bridge is present", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    // Even with a non-empty base configured, a CloudFront signed URL
+    // must not be re-prefixed.
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "https://cdn.example.test/att-1.bin",
+      download_url: SIGNED_URL,
+      filename: "file.md",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(SIGNED_URL);
   });
 });
