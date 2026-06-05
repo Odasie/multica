@@ -25,9 +25,9 @@ const defaultMaxForwardChildren = 100
 // DefaultRecentContextSize is the window the production wiring uses for
 // the group-context prefetch: how many of the most-recent group messages
 // to inline as a <recent_context> block when a user @-mentions the Bot.
-// 20 keeps the agent's prompt meaningfully contextual without bloating it
-// or risking the inbound ACK budget (a single list call, page_size 20).
-const DefaultRecentContextSize = 20
+// 10 keeps the agent's prompt meaningfully contextual without bloating it
+// or risking the inbound ACK budget (a single list call, page_size 10).
+const DefaultRecentContextSize = 10
 
 // Enricher expands an inbound message's body with context the user
 // EXPLICITLY attached — a quoted reply or a merged-and-forwarded bundle
@@ -158,6 +158,12 @@ func (e *inboundEnricher) renderRecentContext(ctx context.Context, creds Install
 	items, err := e.client.ListChatMessages(ctx, creds, ListMessagesParams{
 		ChatID:   msg.ChatID,
 		PageSize: e.recentContextSize,
+		// Anchor the window to the trigger message's time (Lark sends it
+		// as epoch millis; end_time wants seconds) so we pull the
+		// conversation up to the @-mention, not whatever is newest by the
+		// time this prefetch runs. A missing/unparseable time yields 0,
+		// which the client treats as "no end_time" (newest N).
+		EndTime: parseLarkMillis(msg.CreateTime) / 1000,
 	})
 	if err != nil {
 		e.logger.Warn("lark enricher: recent context fetch failed",

@@ -35,6 +35,9 @@ func TestHTTPClient_ListChatMessages(t *testing.T) {
 		if q.Get("user_id_type") != "open_id" {
 			t.Errorf("user_id_type = %q", q.Get("user_id_type"))
 		}
+		if q.Get("end_time") != "1700000000" {
+			t.Errorf("end_time = %q", q.Get("end_time"))
+		}
 		writeJSON(w, map[string]any{
 			"code": 0, "msg": "ok",
 			"data": map[string]any{
@@ -59,7 +62,7 @@ func TestHTTPClient_ListChatMessages(t *testing.T) {
 	})
 
 	c := newTestClient(fake, time.Now)
-	items, err := c.ListChatMessages(context.Background(), testCreds(), ListMessagesParams{ChatID: "oc_chat", PageSize: 20})
+	items, err := c.ListChatMessages(context.Background(), testCreds(), ListMessagesParams{ChatID: "oc_chat", PageSize: 20, EndTime: 1700000000})
 	if err != nil {
 		t.Fatalf("ListChatMessages: %v", err)
 	}
@@ -81,8 +84,11 @@ func TestHTTPClient_ListChatMessagesClampsPageSize(t *testing.T) {
 	fake := newLarkFake(t)
 	fake.stubToken("tok", 7200)
 	var seenSize string
+	var endPresent bool
 	fake.mux.HandleFunc("/open-apis/im/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		seenSize = r.URL.Query().Get("page_size")
+		q := r.URL.Query()
+		seenSize = q.Get("page_size")
+		endPresent = q.Has("end_time")
 		writeJSON(w, map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"items": []any{}}})
 	})
 	c := newTestClient(fake, time.Now)
@@ -91,6 +97,10 @@ func TestHTTPClient_ListChatMessagesClampsPageSize(t *testing.T) {
 	}
 	if seenSize != "50" {
 		t.Errorf("page_size = %q, want clamped 50", seenSize)
+	}
+	// With no EndTime set, the end_time param must be omitted entirely.
+	if endPresent {
+		t.Errorf("end_time should be absent when EndTime=0")
 	}
 }
 

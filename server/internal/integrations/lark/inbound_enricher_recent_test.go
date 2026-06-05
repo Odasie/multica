@@ -46,6 +46,7 @@ func TestEnrichRecentContextGroupMention(t *testing.T) {
 		ChatType:       ChatTypeGroup,
 		AddressedToBot: true,
 		Body:           "总结一下",
+		CreateTime:     "3000", // 3000ms -> end_time 3s
 	}
 
 	out := enrich(t, fake, in, groupCfg())
@@ -65,6 +66,14 @@ func TestEnrichRecentContextGroupMention(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Errorf("no GetMessage expected, got %v", fake.calls)
+	}
+	// The window uses the production default size and is anchored to the
+	// trigger's time (millis -> seconds).
+	if got := fake.listParams[0].PageSize; got != DefaultRecentContextSize {
+		t.Errorf("page size = %d, want %d", got, DefaultRecentContextSize)
+	}
+	if got := fake.listParams[0].EndTime; got != 3 {
+		t.Errorf("end_time = %d, want 3 (3000ms -> 3s)", got)
 	}
 }
 

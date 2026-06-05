@@ -106,6 +106,12 @@ type ListMessagesParams struct {
 	// PageSize is how many of the most-recent messages to fetch. The
 	// client clamps it into Lark's valid 1..50 range.
 	PageSize int
+	// EndTime, when > 0, caps the window to messages created at or before
+	// this Unix timestamp in SECONDS (Lark's end_time is second-, not
+	// millisecond-, granularity). The enricher sets it to the trigger
+	// message's time so the prefetch is anchored to the @-mention moment
+	// rather than whatever is newest by the time the fetch runs.
+	EndTime int64
 }
 
 // LarkMessage is the normalized slice of an IM v1 message item the

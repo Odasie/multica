@@ -620,6 +620,9 @@ func (c *httpAPIClient) ListChatMessages(ctx context.Context, creds Installation
 	q.Set("sort_type", "ByCreateTimeDesc")
 	q.Set("page_size", strconv.Itoa(size))
 	q.Set("user_id_type", "open_id")
+	if p.EndTime > 0 {
+		q.Set("end_time", strconv.FormatInt(p.EndTime, 10))
+	}
 	path := "/open-apis/im/v1/messages?" + q.Encode()
 
 	var resp struct {
