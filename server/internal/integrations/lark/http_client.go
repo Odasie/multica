@@ -649,6 +649,67 @@ func (c *httpAPIClient) ListChatMessages(ctx context.Context, creds Installation
 	return out, nil
 }
 
+// larkBatchGetUsersMaxIDs is Lark's hard cap on user_ids per
+// contact/v3/users/batch call. We drop the overflow rather than error so
+// a caller asking for more still gets the first 50 resolved.
+const larkBatchGetUsersMaxIDs = 50
+
+// BatchGetUsers resolves user open_ids to display names via
+// GET /open-apis/contact/v3/users/batch?user_ids=…&user_id_type=open_id.
+// It mirrors fetchBotUnionID's single-user contact lookup, batched. Only
+// id->name pairs the API actually returns are included; a restricted
+// contact scope or an unknown id simply yields a smaller map (code==0
+// with fewer items), never an error, so the enricher degrades to
+// positional speaker labels. Ids past Lark's 50-per-call cap are dropped.
+func (c *httpAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
+	if len(openIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	if len(openIDs) > larkBatchGetUsersMaxIDs {
+		openIDs = openIDs[:larkBatchGetUsersMaxIDs]
+	}
+	token, err := c.tenantAccessToken(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("user_id_type", "open_id")
+	for _, id := range openIDs {
+		if id != "" {
+			q.Add("user_ids", id)
+		}
+	}
+	path := "/open-apis/contact/v3/users/batch?" + q.Encode()
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Items []struct {
+				OpenID string `json:"open_id"`
+				Name   string `json:"name"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := c.doJSON(ctx, c.resolveBaseURL(creds), http.MethodGet, path, token, nil, &resp); err != nil {
+		return nil, fmt.Errorf("lark http client: batch get users: %w", err)
+	}
+	if resp.Code != 0 {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(creds.AppID)
+		}
+		return nil, fmt.Errorf("lark http client: batch get users: code=%d msg=%q", resp.Code, resp.Msg)
+	}
+
+	out := make(map[string]string, len(resp.Data.Items))
+	for _, it := range resp.Data.Items {
+		if it.OpenID != "" && it.Name != "" {
+			out[it.OpenID] = it.Name
+		}
+	}
+	return out, nil
+}
+
 // larkRESTMessageItem is the IM v1 message item shape returned by the
 // get / list endpoints. It differs from the WS receive event in two
 // ways the enricher cares about: msg_type (not message_type), and a

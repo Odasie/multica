@@ -95,6 +95,17 @@ type APIClient interface {
 	// stays a single round-trip. Like GetMessage, this is a thin transport
 	// adapter: flattening and block assembly are the enricher's job.
 	ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error)
+
+	// BatchGetUsers resolves a set of user open_ids to their display names
+	// via GET /open-apis/contact/v3/users/batch. The enricher uses it to
+	// label recent-context / quoted / forwarded speakers (and the sender
+	// who @-mentioned the Bot) with real names instead of positional
+	// "User 1 / User 2". Returns an open_id -> name map; ids the API does
+	// not return (restricted contact scope, deactivated user, …) are
+	// simply absent from the map, and the caller falls back to a
+	// positional label. openIDs beyond Lark's 50-per-call cap are dropped
+	// by the client.
+	BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error)
 }
 
 // ListMessagesParams selects a bounded, recent window of messages in a
@@ -315,5 +326,10 @@ func (s *stubAPIClient) GetMessage(ctx context.Context, creds InstallationCreden
 
 func (s *stubAPIClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
 	s.log.Warn("lark stub client: ListChatMessages called", "chat_id", string(p.ChatID))
+	return nil, ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
+	s.log.Warn("lark stub client: BatchGetUsers called", "count", len(openIDs))
 	return nil, ErrAPIClientNotConfigured
 }
