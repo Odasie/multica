@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 // Named import, NOT default: react-qr-code is CJS, and electron-vite's
 // dep-optimizer default-import interop handed back the module namespace
 // object instead of the component, throwing "Element type is invalid …
@@ -287,10 +287,20 @@ export function LarkAgentBindButton({
   agentId,
   agentName,
   className,
+  onShowConnectedDetails,
 }: {
   agentId: string;
   agentName?: string;
   className?: string;
+  /**
+   * When set, the connected state renders as a compact read-only status
+   * row that invokes this callback on click instead of the full badge with
+   * inline Manage / Disconnect actions. The agent inspector passes a
+   * "jump to the Integrations tab" handler so the left column stays a
+   * glanceable summary and the management actions live in one place (the
+   * tab). The tab itself omits this prop and gets the full badge.
+   */
+  onShowConnectedDetails?: () => void;
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
@@ -324,7 +334,13 @@ export function LarkAgentBindButton({
     (inst) => inst.agent_id === agentId && inst.status === "active",
   );
   if (existing) {
-    return (
+    return onShowConnectedDetails ? (
+      <LarkAgentBotStatusRow
+        installation={existing}
+        onClick={onShowConnectedDetails}
+        className={className}
+      />
+    ) : (
       <LarkAgentBotConnectedBadge installation={existing} className={className} />
     );
   }
@@ -358,12 +374,52 @@ export function LarkAgentBindButton({
   );
 }
 
-// LarkAgentBotConnectedBadge is the "already connected" affordance the
-// agent inspector renders in place of the Bind button when this agent
-// has an active Lark installation. It surfaces three things side by
-// side: a green-dot status pill, a "Manage in Lark" link to the Bot's
-// dev console page (new tab), and an Unbind/Disconnect action that
-// removes the installation after a confirm dialog.
+// LarkAgentBotStatusRow is the compact, read-only connected affordance the
+// agent inspector (left column) renders instead of the full badge. It shows
+// only the status — green dot, Feishu/Lark region chip, "Connected to Lark"
+// — and is a single full-width button that deep-links into the Integrations
+// tab, where Manage / Disconnect live. Keeping the destructive action out of
+// the always-visible sidebar means it exists in exactly one place.
+function LarkAgentBotStatusRow({
+  installation,
+  onClick,
+  className,
+}: {
+  installation: LarkInstallation;
+  onClick: () => void;
+  className?: string;
+}) {
+  const { t } = useT("settings");
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+        className,
+      )}
+      data-testid="lark-agent-bot-status"
+    >
+      <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        {installation.region === "lark"
+          ? t(($) => $.lark.region_lark)
+          : t(($) => $.lark.region_feishu)}
+      </span>
+      <span className="truncate">{t(($) => $.lark.agent_bot_connected_label)}</span>
+      <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0" />
+    </button>
+  );
+}
+
+// LarkAgentBotConnectedBadge is the full "already connected" affordance the
+// Integrations tab renders in place of the Bind button when this agent has
+// an active Lark installation. (The inspector's left column uses the compact
+// LarkAgentBotStatusRow instead, which deep-links here.) It lays out as two
+// rows: row 1 pairs a green-dot status (with the Feishu/Lark region chip) on
+// the left with a soft-destructive Disconnect button on the right; row 2
+// carries the secondary "Manage in Lark" link to the Bot's dev console page
+// (new tab). Disconnect removes the installation after a confirm dialog.
 //
 // Visibility rules carry over from the parent `LarkAgentBindButton`:
 // only owners and admins ever reach this component, so the unbind
@@ -422,47 +478,56 @@ function LarkAgentBotConnectedBadge({
 
   return (
     <div
-      className={cn(
-        "flex flex-wrap items-center gap-x-3 gap-y-1",
-        className,
-      )}
+      className={cn("space-y-2", className)}
       data-testid="lark-agent-bot-connected"
     >
-      <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-        {t(($) => $.lark.agent_bot_connected_label)}
-      </span>
+      {/* Row 1: connection status (left) and the destructive unbind
+          action (right). The Disconnect uses the soft-tinted
+          `destructive` button variant — it reads dangerous without the
+          loud solid-red, and stays visible because it is the user-facing
+          recovery path for the install_supported=false / re-scan
+          zombie-bot trap (server/internal/handler/lark.go). Confirmation
+          is mandatory: the backend disconnect tears down the WebSocket
+          and stops message delivery. */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            {installation.region === "lark"
+              ? t(($) => $.lark.region_lark)
+              : t(($) => $.lark.region_feishu)}
+          </span>
+          <span className="truncate">{t(($) => $.lark.agent_bot_connected_label)}</span>
+        </span>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={() => setConfirmOpen(true)}
+          disabled={disconnecting}
+          title={t(($) => $.lark.agent_bot_disconnect_tooltip)}
+          aria-label={t(($) => $.lark.disconnect)}
+          data-testid="lark-agent-bot-disconnect"
+        >
+          <Trash2 className="h-3 w-3" />
+          {disconnecting
+            ? t(($) => $.lark.disconnecting)
+            : t(($) => $.lark.disconnect)}
+        </Button>
+      </div>
+
+      {/* Row 2: secondary "Manage in Lark" link to the Bot's dev-console
+          app page. Demoted below the status row so it no longer competes
+          with the primary connect/disconnect intents. */}
       <a
         href={manageHref}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
         title={t(($) => $.lark.agent_bot_manage_tooltip)}
       >
         <ExternalLink className="h-3 w-3" />
         {t(($) => $.lark.agent_bot_manage_link)}
       </a>
-      {/* Unbind affordance — kept visually quieter than the primary
-          "Manage in Lark" link so it doesn't compete for attention,
-          but still discoverable. Confirmation is mandatory: the
-          backend disconnect tears down the WebSocket and stops
-          message delivery, and this is the user-facing recovery path
-          for the install_supported=false / re-scan zombie-bot trap
-          (server/internal/handler/lark.go). */}
-      <button
-        type="button"
-        onClick={() => setConfirmOpen(true)}
-        disabled={disconnecting}
-        className="inline-flex items-center gap-1 rounded text-xs text-muted-foreground transition-colors hover:text-destructive focus-visible:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/30 disabled:cursor-not-allowed disabled:opacity-50"
-        title={t(($) => $.lark.agent_bot_disconnect_tooltip)}
-        aria-label={t(($) => $.lark.disconnect)}
-        data-testid="lark-agent-bot-disconnect"
-      >
-        <Trash2 className="h-3 w-3" />
-        {disconnecting
-          ? t(($) => $.lark.disconnecting)
-          : t(($) => $.lark.disconnect)}
-      </button>
 
       <AlertDialog
         open={confirmOpen}
