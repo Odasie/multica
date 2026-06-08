@@ -38,6 +38,39 @@ func TestBuildAntigravityArgsBasic(t *testing.T) {
 	}
 }
 
+func TestBuildAntigravityArgsModel(t *testing.T) {
+	t.Parallel()
+
+	// agy 1.0.6's --model takes the exact human display string (spaces +
+	// parens), not a slug. It must ride as a single argv element so no shell
+	// quoting is required, and it must sit before the user's custom args.
+	args := buildAntigravityArgs(
+		"hello",
+		"/tmp/agy.log",
+		20*time.Minute,
+		ExecOptions{Cwd: "/work", Model: "Claude Opus 4.6 (Thinking)"},
+		quietAntigravityLogger(),
+	)
+
+	want := []string{
+		"-p", "hello",
+		"--dangerously-skip-permissions",
+		"--model", "Claude Opus 4.6 (Thinking)",
+		"--print-timeout", "20m0s",
+		"--log-file", "/tmp/agy.log",
+		"--add-dir", "/work",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("buildAntigravityArgs with model mismatch\n got: %v\nwant: %v", args, want)
+	}
+
+	// Empty model must omit the flag entirely so agy resolves its own default.
+	bare := buildAntigravityArgs("hi", "/tmp/agy.log", 0, ExecOptions{}, quietAntigravityLogger())
+	if slices.Contains(bare, "--model") {
+		t.Fatalf("--model must be omitted when opts.Model is empty; got %v", bare)
+	}
+}
+
 func TestBuildAntigravityArgsNoTimeoutOmitsPrintTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +132,7 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 				"--continue",
 				"-c",
 				"--conversation", "bad-id",
+				"--model", "sneaky-model", // managed via ExecOptions.Model
 				"--dangerously-skip-permissions",
 				"--print-timeout", "1h",
 				"--log-file", "/elsewhere.log",
@@ -125,6 +159,9 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 	}
 	if strings.Contains(joined, "bad-id") {
 		t.Errorf("custom --conversation value leaked through filter: %v", args)
+	}
+	if strings.Contains(joined, "sneaky-model") {
+		t.Errorf("custom --model value leaked through filter: %v", args)
 	}
 	if strings.Contains(joined, "/elsewhere.log") {
 		t.Errorf("custom --log-file value leaked through filter: %v", args)

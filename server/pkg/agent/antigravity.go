@@ -196,6 +196,7 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 	"-c":                             blockedStandalone, // resume via --conversation, not --continue
 	"--continue":                     blockedStandalone,
 	"--conversation":                 blockedWithValue, // managed via ExecOptions.ResumeSessionID
+	"--model":                        blockedWithValue, // managed via ExecOptions.Model / agent.model
 	"--print-timeout":                blockedWithValue,
 	"--dangerously-skip-permissions": blockedStandalone, // always-on in daemon mode
 	"--log-file":                     blockedWithValue,  // daemon needs it for session capture
@@ -203,16 +204,28 @@ var antigravityBlockedArgs = map[string]blockedArgMode{
 
 // buildAntigravityArgs assembles the argv for a one-shot agy invocation.
 //
-//	agy -p <prompt> --dangerously-skip-permissions --print-timeout <duration>
-//	    --log-file <tmp> [--conversation <id>] [--add-dir <cwd>]
+//	agy -p <prompt> --dangerously-skip-permissions [--model <display name>]
+//	    --print-timeout <duration> --log-file <tmp>
+//	    [--conversation <id>] [--add-dir <cwd>]
 //
-// The Antigravity CLI exposes neither --model nor --system-prompt today;
-// model selection lives in the user's Antigravity settings, and runtime
-// instructions are delivered via AGENTS.md in the task workdir.
+// agy 1.0.6 added a `--model` flag (MUL-3125), so opts.Model is now wired
+// through when set. The value is the exact human display string `agy models`
+// prints (e.g. "Claude Opus 4.6 (Thinking)"), NOT a provider/model slug —
+// it's passed verbatim as a single exec arg, so spaces and parens need no
+// shell quoting. agy still exposes no --system-prompt; runtime instructions
+// are delivered via AGENTS.md in the task workdir.
+//
+// Caveat: agy silently no-ops on a model string it doesn't recognise (empty
+// output, exit 0), so callers should only hand over values discovered via
+// `agy models`. When opts.Model is empty we omit the flag and agy resolves
+// its own default.
 func buildAntigravityArgs(prompt, logPath string, timeout time.Duration, opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{
 		"-p", prompt,
 		"--dangerously-skip-permissions",
+	}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
 	}
 	// Only pass --print-timeout when a positive wall-clock cap is configured.
 	// timeout <= 0 means "no cap" (MUL-3064): agy then runs without its own
