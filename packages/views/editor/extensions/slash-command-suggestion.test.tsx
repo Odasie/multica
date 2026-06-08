@@ -42,6 +42,8 @@ import {
   type SlashCommandListRef,
   createSlashCommandSuggestion,
   type SlashCommandItem,
+  buildBuiltinCommandItems,
+  BUILTIN_COMMANDS,
 } from "./slash-command-suggestion";
 
 function agent(overrides: Partial<Agent>): Agent {
@@ -325,5 +327,37 @@ describe("SlashCommandList empty states", () => {
     );
 
     expect(getByText("No matching skills")).toBeInTheDocument();
+  });
+
+  it("renders nothing on empty items when hideOnEmpty is set (command menu)", () => {
+    const { container } = render(
+      <I18nWrapper>
+        <SlashCommandList items={[]} query="6" command={vi.fn()} hideOnEmpty />
+      </I18nWrapper>,
+    );
+
+    // No popup box on a non-matching `/` (e.g. typing a date like 6/8).
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("buildBuiltinCommandItems", () => {
+  it("returns the full built-in command set for an empty query", () => {
+    expect(buildBuiltinCommandItems("")).toEqual(BUILTIN_COMMANDS);
+  });
+
+  it("includes /note while the query is a prefix of it", () => {
+    expect(buildBuiltinCommandItems("no").map((c) => c.id)).toEqual(["note"]);
+    expect(buildBuiltinCommandItems("NOTE").map((c) => c.id)).toEqual(["note"]);
+  });
+
+  it("matches against the description as well as the label", () => {
+    expect(buildBuiltinCommandItems("agent").map((c) => c.id)).toEqual([
+      "note",
+    ]);
+  });
+
+  it("returns nothing for a query that matches no command", () => {
+    expect(buildBuiltinCommandItems("deploy")).toEqual([]);
   });
 });
