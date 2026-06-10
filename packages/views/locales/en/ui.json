@@ -4,5 +4,7 @@
   "pagination_previous": "Go to previous page",
   "pagination_next": "Go to next page",
   "copy_code": "Copy code",
-  "plain_text": "plain text"
+  "plain_text": "plain text",
+  "start_voice_input": "Start voice input",
+  "stop_voice_input": "Stop voice input"
 }

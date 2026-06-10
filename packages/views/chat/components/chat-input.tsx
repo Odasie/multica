@@ -11,6 +11,7 @@ import {
 } from "../../editor";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { VoiceControls } from "@multica/ui/components/common/voice-controls";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { createLogger } from "@multica/core/logger";
 import { enterKey, formatShortcut, modKey } from "@multica/core/platform";
@@ -187,6 +188,15 @@ export function ChatInput({
     setIsEmpty(true);
   };
 
+  // Push-to-talk: drop the transcript into the composer (focusing it) so the
+  // user can review/edit before sending through the normal submit path. We
+  // deliberately don't auto-send — the send button is the confirm step.
+  const handleVoiceTranscript = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    editorRef.current?.insertText(trimmed);
+  }, []);
+
   const placeholder = noAgent
     ? t(($) => $.input.placeholder_no_agent)
     : disabled
@@ -260,6 +270,13 @@ export function ChatInput({
             <FileUploadButton
               size="sm"
               onSelect={(file) => editorRef.current?.uploadFile(file)}
+            />
+          )}
+          {!disabled && !noAgent && (
+            <VoiceControls
+              size="sm"
+              disabled={isRunning}
+              onTranscript={handleVoiceTranscript}
             />
           )}
           <SubmitButton
