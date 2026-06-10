@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Attachment as AttachmentRecord } from "@multica/core/types";
 
 const {
   getAttachmentTextContentMock,
+  fetchAttachmentDownloadBlobMock,
   getBaseUrlMock,
   downloadMock,
   openExternalMock,
   openByUrlMock,
+  isDesktopShellMock,
 } = vi.hoisted(() => ({
   getAttachmentTextContentMock: vi.fn(),
+  fetchAttachmentDownloadBlobMock: vi.fn(),
   // Default: empty base URL so existing tests render site-relative URLs
   // through the proxy (i.e. exactly the way the web app behaves). The
   // absolutize-specific suite below overrides this to simulate Desktop /
@@ -20,11 +23,13 @@ const {
   downloadMock: vi.fn(),
   openExternalMock: vi.fn(),
   openByUrlMock: vi.fn(),
+  isDesktopShellMock: vi.fn(() => false),
 }));
 
 vi.mock("@multica/core/api", () => ({
   api: {
     getAttachmentTextContent: getAttachmentTextContentMock,
+    fetchAttachmentDownloadBlob: fetchAttachmentDownloadBlobMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: class extends Error {},
@@ -37,6 +42,7 @@ vi.mock("./use-download-attachment", () => ({
 
 vi.mock("../platform", () => ({
   openExternal: openExternalMock,
+  isDesktopShell: isDesktopShellMock,
 }));
 
 vi.mock("../i18n", () => ({
@@ -138,6 +144,8 @@ beforeEach(() => {
   // the web app's same-origin proxy. Tests that simulate Desktop / mobile
   // webview override per-case via getBaseUrlMock.mockReturnValue(...).
   getBaseUrlMock.mockReturnValue("");
+  fetchAttachmentDownloadBlobMock.mockRejectedValue(new Error("not internal"));
+  isDesktopShellMock.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -275,6 +283,46 @@ describe("Attachment — image dispatch", () => {
       "https://api.multica.test/api/attachments/att-1/download",
     );
     expect(img?.getAttribute("src")).not.toContain("prod.s3.amazonaws.com");
+  });
+
+  it("internal API image URLs are rendered through an authenticated blob URL", async () => {
+    isDesktopShellMock.mockReturnValue(true);
+    const rawSrc =
+      "https://multica-api.copilothub.ai/api/attachments/019eb094-bed1-7590-85db-acd2d8dd6c5d/download";
+    const createObjectURL = vi.fn(() => "blob:authenticated-image");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    fetchAttachmentDownloadBlobMock.mockResolvedValueOnce(
+      new Blob(["png"], { type: "image/png" }),
+    );
+
+    const { unmount } = renderWithQuery(
+      <Attachment
+        attachment={{
+          kind: "url",
+          url: rawSrc,
+          filename: "shot.png",
+          forceKind: "image",
+        }}
+      />,
+    );
+
+    const img = document.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(rawSrc);
+    await waitFor(() => {
+      expect(img?.getAttribute("src")).toBe("blob:authenticated-image");
+    });
+    expect(fetchAttachmentDownloadBlobMock).toHaveBeenCalledWith(rawSrc);
+
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:authenticated-image");
   });
 
   it("legacy backend (no markdown_url on record) still falls back to record.url", () => {

@@ -23,6 +23,7 @@
  * hints (selected, editable, onDelete).
  */
 
+import { useEffect, useState } from "react";
 import {
   Download,
   Link as LinkIcon,
@@ -35,6 +36,7 @@ import { copyText } from "@multica/ui/lib/clipboard";
 import { api } from "@multica/core/api";
 import type { Attachment as AttachmentRecord } from "@multica/core/types";
 import { useT } from "../i18n";
+import { isDesktopShell } from "../platform";
 import { useAttachmentDownloadResolver } from "./attachment-download-context";
 import { useAttachmentPreview } from "./attachment-preview-modal";
 import { useDownloadAttachment } from "./use-download-attachment";
@@ -379,6 +381,7 @@ function ImageAttachmentView({
   className,
 }: ImageAttachmentViewProps) {
   const { t } = useT("editor");
+  const renderedSrc = useAuthenticatedImageSrc(src);
 
   const handleCopyLink = async () => {
     if (await copyText(src)) {
@@ -412,7 +415,7 @@ function ImageAttachmentView({
         onClick={clickable ? onView : undefined}
       >
         <img
-          src={src || undefined}
+          src={renderedSrc || undefined}
           alt={alt}
           width={width}
           height={height}
@@ -444,4 +447,34 @@ function ImageAttachmentView({
       </span>
     </span>
   );
+}
+
+function useAuthenticatedImageSrc(src: string): string {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let currentObjectUrl: string | null = null;
+    setObjectUrl(null);
+
+    if (!src) return undefined;
+    if (!isDesktopShell()) return undefined;
+
+    api.fetchAttachmentDownloadBlob?.(src)
+      .then((blob) => {
+        if (cancelled) return;
+        currentObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(currentObjectUrl);
+      })
+      .catch(() => {
+        // Non-internal/external URLs should keep using the original src.
+      });
+
+    return () => {
+      cancelled = true;
+      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+    };
+  }, [src]);
+
+  return objectUrl ?? src;
 }

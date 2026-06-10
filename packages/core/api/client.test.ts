@@ -6,6 +6,48 @@ afterEach(() => {
 });
 
 describe("ApiClient", () => {
+  it("fetches internal attachment download URLs with the normal auth headers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Blob(["png"], { type: "image/png" }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    client.setToken("tok_123");
+
+    await client.fetchAttachmentDownloadBlob(
+      "https://api.example.test/api/attachments/019eb094-bed1-7590-85db-acd2d8dd6c5d/download?cache=1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      "https://api.example.test/api/attachments/019eb094-bed1-7590-85db-acd2d8dd6c5d/download?cache=1",
+    );
+    expect(init).toMatchObject({
+      credentials: "include",
+      headers: expect.objectContaining({
+        Authorization: "Bearer tok_123",
+      }),
+    });
+  });
+
+  it("does not fetch attachment-looking URLs from a different origin", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(
+      client.fetchAttachmentDownloadBlob(
+        "https://evil.example.test/api/attachments/019eb094-bed1-7590-85db-acd2d8dd6c5d/download",
+      ),
+    ).rejects.toThrow("not an internal attachment download URL");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("preserves HTTP status on failed requests", async () => {
     vi.stubGlobal(
       "fetch",

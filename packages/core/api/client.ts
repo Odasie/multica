@@ -117,6 +117,7 @@ import type {
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
 } from "../types";
+import { attachmentIdFromDownloadURL } from "../types/attachment-url";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
   CloudRuntimeNode,
@@ -267,6 +268,47 @@ export class ApiClient {
 
   getBaseUrl(): string {
     return this.baseUrl;
+  }
+
+  private internalAttachmentDownloadPath(rawUrl: string): string | null {
+    if (!attachmentIdFromDownloadURL(rawUrl)) return null;
+
+    if (/^https?:\/\//i.test(rawUrl)) {
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        return null;
+      }
+
+      let expectedOrigin = "";
+      try {
+        expectedOrigin = this.baseUrl
+          ? new URL(this.baseUrl).origin
+          : typeof window !== "undefined"
+            ? window.location.origin
+            : "";
+      } catch {
+        return null;
+      }
+      if (!expectedOrigin || parsed.origin !== expectedOrigin) return null;
+      return `${parsed.pathname}${parsed.search}`;
+    }
+
+    if (!rawUrl.startsWith("/")) return null;
+    try {
+      const parsed = new URL(rawUrl, "http://multica.local");
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  async fetchAttachmentDownloadBlob(rawUrl: string): Promise<Blob> {
+    const path = this.internalAttachmentDownloadPath(rawUrl);
+    if (!path) throw new Error("not an internal attachment download URL");
+    const res = await this.fetchRaw(path);
+    return res.blob();
   }
 
   setToken(token: string | null) {
