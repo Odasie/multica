@@ -54,7 +54,7 @@ import { LocalDirectoryHint } from "../../projects/components/local-directory-hi
 import { CommentCard } from "./comment-card";
 import { CommentInput } from "./comment-input";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
-import { collectThreadReplies } from "./thread-utils";
+import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { PullRequestList } from "./pull-request-list";
@@ -732,6 +732,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       else next.delete(commentId);
       return next;
     });
+    // On collapse the thread shrinks and the viewport would jump to whatever was
+    // below; pull the just-folded thread back into view with the smallest
+    // movement. rAF waits for the collapse to land before measuring.
+    if (!expand) {
+      requestAnimationFrame(() =>
+        document.getElementById(`comment-${commentId}`)?.scrollIntoView({ block: "nearest" }),
+      );
+    }
   }, []);
   const clearResolvedExpand = useCallback((commentId: string) => {
     setExpandedResolved((prev) => {
@@ -859,10 +867,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // visually expanded after the second resolve.
   const handleResolveToggle = useCallback(
     (commentId: string, resolved: boolean) => {
-      clearResolvedExpand(commentId);
+      // Fold the thread back on any resolve change: clear the thread ROOT's
+      // expand entry (expand state is keyed on root id, but a resolve target
+      // can be a reply). Walk parent_id up to the root.
+      const byId = new Map(timeline.map((e) => [e.id, e]));
+      let cur = byId.get(commentId);
+      while (cur?.parent_id && byId.get(cur.parent_id)) cur = byId.get(cur.parent_id)!;
+      clearResolvedExpand(cur?.id ?? commentId);
       toggleResolveComment(commentId, resolved);
     },
-    [clearResolvedExpand, toggleResolveComment],
+    [timeline, clearResolvedExpand, toggleResolveComment],
   );
 
   // Memoized timeline grouping. Each render rebuilds the per-parent map from
@@ -1086,13 +1100,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (didHighlightRef.current === highlightCommentId) return;
 
     const rootId = replyToRoot.get(highlightCommentId);
-    if (
-      rootId &&
-      rootId !== highlightCommentId &&
-      items[targetIdx]?.kind === "resolved-bar"
-    ) {
-      toggleResolvedExpand(rootId, true);
-      return;
+    if (rootId && rootId !== highlightCommentId) {
+      // Root resolved → the whole thread is a folded bar.
+      if (items[targetIdx]?.kind === "resolved-bar") {
+        toggleResolvedExpand(rootId, true);
+        return;
+      }
+      // A reply is the resolution → the other replies fold behind the
+      // "N comments" bar; expand if the target is one of those folded replies.
+      const rootItem = items[targetIdx];
+      if (rootItem?.kind === "comment" && !expandedResolved.has(rootId)) {
+        const resolution = deriveThreadResolution(
+          rootItem.entry,
+          timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES,
+        );
+        if (resolution.kind === "reply" && resolution.resolutionId !== highlightCommentId) {
+          toggleResolvedExpand(rootId, true);
+          return;
+        }
+      }
     }
 
     const el = document.getElementById(`comment-${highlightCommentId}`);
@@ -1138,7 +1164,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       cancelAnimationFrame(rafId);
       clearTimeout(fade);
     };
-  }, [highlightCommentId, items, targetIdx, scrollContainerEl, replyToRoot, toggleResolvedExpand]);
+  }, [highlightCommentId, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand]);
 
   // Cmd-F / Ctrl-F on a virtualized timeline only searches what's mounted in
   // the viewport — off-screen comments are invisible to browser find-in-page.
@@ -1616,6 +1642,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onToggleReaction={handleToggleReaction}
             onResolveToggle={handleResolveToggle}
             onCollapseResolved={isResolved ? () => toggleResolvedExpand(item.id, false) : undefined}
+            expandedResolvedIds={expandedResolved}
+            onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
           />
         </div>

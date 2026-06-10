@@ -1068,7 +1068,7 @@ describe("IssueDetail (shared)", () => {
 
       // After expansion, the reply must appear in the DOM (inside the now
       // -unfolded CommentCard) and the deep-link effect must land on + highlight
-      // it. The reply highlight renders as a bg tint on its row (see
+      // it. The reply highlight renders as a computed bg tint on its row (see
       // CommentCard's reply branch), so assert the row carries the brand tint.
       await waitFor(() => {
         expect(
@@ -1078,7 +1078,7 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => {
         expect(
           document.getElementById("comment-reply-1")?.className,
-        ).toMatch(/bg-brand/);
+        ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
     });
   });
