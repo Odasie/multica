@@ -1,5 +1,5 @@
 import { forwardRef, useRef, useImperativeHandle } from "react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
@@ -70,6 +70,10 @@ vi.mock("../../editor", () => ({
       getMarkdown: () => valueRef.current,
       clearContent: () => {
         valueRef.current = "";
+      },
+      insertText: (text: string) => {
+        valueRef.current = `${valueRef.current}${text}`;
+        onUpdate?.(valueRef.current);
       },
       blur: () => {},
       focus: () => {},
@@ -306,10 +310,103 @@ describe("ChatInput attachment wiring", () => {
     // FileUploadButton renders an icon button labelled by its tooltip — when
     // upload wiring is absent the chat input falls back to "submit + extras"
     // only. Probe by counting buttons: with no upload, only the submit
-    // button is in the action row.
+    // button is in the action row. (VoiceControls renders nothing here —
+    // jsdom has no Web Speech API, so it feature-detects out.)
     const buttons = screen.getAllByRole("button");
     // The agent picker may render zero buttons
     // in this test (no leftAdornment passed). So a single button = submit.
     expect(buttons.length).toBe(1);
+  });
+});
+
+describe("ChatInput voice input wiring", () => {
+  interface SpeechResultEventLike {
+    resultIndex: number;
+    results: {
+      length: number;
+      [index: number]: {
+        isFinal: boolean;
+        length: number;
+        [alt: number]: { transcript: string };
+      };
+    };
+  }
+
+  let instances: FakeSpeechRecognition[];
+
+  class FakeSpeechRecognition {
+    lang = "";
+    continuous = false;
+    interimResults = false;
+    onresult: ((event: SpeechResultEventLike) => void) | null = null;
+    onerror: ((event: { error: string }) => void) | null = null;
+    onend: (() => void) | null = null;
+    start = vi.fn();
+    stop = vi.fn();
+    abort = vi.fn();
+    constructor() {
+      instances.push(this);
+    }
+  }
+
+  // The mic button is the only action button carrying aria-pressed, so we
+  // can target it without depending on i18n label resolution in tests.
+  const findMic = () => screen.findByRole("button", { pressed: false });
+
+  beforeEach(() => {
+    instances = [];
+    (window as unknown as { SpeechRecognition: unknown }).SpeechRecognition =
+      FakeSpeechRecognition;
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { SpeechRecognition?: unknown })
+      .SpeechRecognition;
+  });
+
+  it("drops a recognized transcript into the composer and sends it through the existing path", async () => {
+    const onSend = vi.fn();
+    renderInput({ onSend });
+
+    // Feature detection runs in an effect, so the mic appears post-mount.
+    const mic = await findMic();
+    fireEvent.click(mic);
+    expect(instances).toHaveLength(1);
+    expect(instances[0]!.start).toHaveBeenCalledTimes(1);
+
+    // Simulate the browser returning a final transcript.
+    act(() => {
+      instances[0]!.onresult?.({
+        resultIndex: 0,
+        results: {
+          length: 1,
+          0: { isFinal: true, length: 1, 0: { transcript: "hello fleet" } },
+        },
+      });
+    });
+
+    // Transcript landed in the composer → submit enables → reuse the normal
+    // send path (no voice-specific send logic). Last button on the bar is
+    // the SubmitButton.
+    let sendButton: HTMLElement;
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      sendButton = buttons[buttons.length - 1]!;
+      expect(sendButton).not.toBeDisabled();
+    });
+    fireEvent.click(sendButton!);
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]![0]).toContain("hello fleet");
+  });
+
+  it("hides the mic button where the Web Speech API is unavailable", async () => {
+    delete (window as unknown as { SpeechRecognition?: unknown })
+      .SpeechRecognition;
+    renderInput({ onSend: vi.fn() });
+    // Let the feature-detect effect settle, then confirm no toggle button.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { pressed: false })).toBeNull();
+    });
   });
 });

@@ -4,5 +4,7 @@
   "pagination_previous": "上一页",
   "pagination_next": "下一页",
   "copy_code": "复制代码",
-  "plain_text": "纯文本"
+  "plain_text": "纯文本",
+  "start_voice_input": "开始语音输入",
+  "stop_voice_input": "停止语音输入"
 }

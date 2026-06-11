@@ -129,6 +129,10 @@ interface ContentEditorProps {
 interface ContentEditorRef {
   getMarkdown: () => string;
   clearContent: () => void;
+  /** Insert plain text at the current cursor and focus the editor. Used by
+   *  voice input to drop a transcript into the composer for the user to
+   *  review before sending. */
+  insertText: (text: string) => void;
   focus: () => void;
   /** Drop focus from the editor — used by chat after send so the caret
    *  stops competing with the StatusPill / streaming reply for the user's
@@ -406,6 +410,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       getMarkdown: () => stripBlobUrls(editor?.getMarkdown() ?? ""),
       clearContent: () => {
         editor?.commands.clearContent();
+      },
+      insertText: (text: string) => {
+        editor?.chain().focus().insertContent(text).run();
       },
       focus: () => {
         editor?.commands.focus();

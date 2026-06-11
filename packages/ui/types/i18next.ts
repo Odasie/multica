@@ -23,6 +23,8 @@ declare global {
       pagination_next: string;
       copy_code: string;
       plain_text: string;
+      start_voice_input: string;
+      stop_voice_input: string;
     };
   }
 }
