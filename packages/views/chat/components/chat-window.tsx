@@ -48,6 +48,8 @@ import { ChatInput } from "./chat-input";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
+import { plainTextForSpeech } from "../lib/speech-text";
+import { useTextToSpeech } from "@multica/ui/hooks/use-text-to-speech";
 import { createLogger } from "@multica/core/logger";
 import type { Agent, ChatMessage, ChatMessagesPage, ChatPendingTask, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -84,6 +86,8 @@ export function ChatWindow() {
   const setOpen = useChatStore((s) => s.setOpen);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId);
+  const autoSpeak = useChatStore((s) => s.autoSpeak);
+  const { speak, cancel: cancelSpeech } = useTextToSpeech();
   const user = useAuthStore((s) => s.user);
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -105,6 +109,7 @@ export function ChatWindow() {
   // prepended rows, so concurrent server inserts cannot drift the scroll anchor.
   const messagePages = activeSessionId ? rawMessagePages?.pages ?? [] : [];
   const messages = [...messagePages].reverse().flatMap((page) => page.messages);
+  const latestMessage = messages[messages.length - 1];
   const olderMessageCount = messagePages.slice(1).reduce((sum, page) => sum + page.messages.length, 0);
   const firstItemIndex = messages.length > 0
     ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
@@ -207,6 +212,41 @@ export function ChatWindow() {
     markRead.mutate(activeSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
   }, [isOpen, activeSessionId, currentHasUnread]);
+
+  // Parley auto-speak — read newly-arrived agent replies aloud.
+  //
+  // `primedSessionRef` records, per session, the latest message id we've
+  // already "heard". The first time messages load for a session (or when
+  // auto-speak is switched on) we prime to the current latest WITHOUT
+  // speaking, so existing history is never read back — only replies that
+  // arrive from that point on. We only ever consider the LAST message, so
+  // loading older pages (which prepend) never triggers speech.
+  const lastSpokenIdRef = useRef<string | null>(null);
+  const primedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoSpeak || !activeSessionId || !latestMessage) return;
+
+    if (primedSessionRef.current !== activeSessionId) {
+      primedSessionRef.current = activeSessionId;
+      lastSpokenIdRef.current = latestMessage.id;
+      return;
+    }
+    if (latestMessage.id === lastSpokenIdRef.current) return;
+    lastSpokenIdRef.current = latestMessage.id;
+
+    // Only completed agent replies: skip the user's own messages, optimistic
+    // placeholders, and synthesized failure bubbles.
+    if (latestMessage.role !== "assistant") return;
+    if (latestMessage.failure_reason) return;
+    if (latestMessage.id.startsWith("optimistic-")) return;
+    const text = plainTextForSpeech(latestMessage.content ?? "");
+    if (text) speak(text);
+  }, [autoSpeak, activeSessionId, latestMessage, speak]);
+
+  // Stop any in-flight speech the moment auto-speak is switched off.
+  useEffect(() => {
+    if (!autoSpeak) cancelSpeech();
+  }, [autoSpeak, cancelSpeech]);
 
   const { uploadWithToast } = useFileUpload(api);
 

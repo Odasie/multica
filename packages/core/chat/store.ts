@@ -22,6 +22,12 @@ const CHAT_EXPANDED_KEY = "multica:chat:expanded";
  * every subsequent reload.
  */
 const OPEN_KEY = "multica:chat:isOpen";
+/**
+ * Parley auto-speak preference, persisted globally like OPEN_KEY. Opt-in:
+ * missing key defaults to OFF so users aren't surprised by audio — once they
+ * turn it on, the choice sticks across reloads and workspaces.
+ */
+const AUTO_SPEAK_KEY = "multica:chat:autoSpeak";
 
 function readDrafts(storage: StorageAdapter, key: string): Record<string, string> {
   const raw = storage.getItem(key);
@@ -77,8 +83,11 @@ export interface ChatState {
   chatWidth: number;
   chatHeight: number;
   isExpanded: boolean;
+  /** Parley: when true, agent replies are read aloud (TTS). */
+  autoSpeak: boolean;
   setOpen: (open: boolean) => void;
   toggle: () => void;
+  toggleAutoSpeak: () => void;
   setActiveSession: (id: string | null) => void;
   setSelectedAgentId: (id: string) => void;
   /** sessionId accepts a real session UUID or DRAFT_NEW_SESSION. */
@@ -115,6 +124,7 @@ export function createChatStore(options: ChatStoreOptions) {
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
+    autoSpeak: storage.getItem(AUTO_SPEAK_KEY) === "true",
     setOpen: (open) => {
       logger.debug("setOpen", { from: get().isOpen, to: open });
       storage.setItem(OPEN_KEY, String(open));
@@ -125,6 +135,12 @@ export function createChatStore(options: ChatStoreOptions) {
       logger.debug("toggle", { to: next });
       storage.setItem(OPEN_KEY, String(next));
       set({ isOpen: next });
+    },
+    toggleAutoSpeak: () => {
+      const next = !get().autoSpeak;
+      logger.info("toggleAutoSpeak", { to: next });
+      storage.setItem(AUTO_SPEAK_KEY, String(next));
+      set({ autoSpeak: next });
     },
     setActiveSession: (id) => {
       logger.info("setActiveSession", { from: get().activeSessionId, to: id });

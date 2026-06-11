@@ -6,5 +6,7 @@
   "copy_code": "コードをコピー",
   "plain_text": "プレーンテキスト",
   "start_voice_input": "音声入力を開始",
-  "stop_voice_input": "音声入力を停止"
+  "stop_voice_input": "音声入力を停止",
+  "start_auto_speak": "エージェントの返信を読み上げる",
+  "stop_auto_speak": "読み上げを停止"
 }

@@ -12,6 +12,7 @@ import {
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { VoiceControls } from "@multica/ui/components/common/voice-controls";
+import { AutoSpeakToggle } from "@multica/ui/components/common/auto-speak-toggle";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { createLogger } from "@multica/core/logger";
 import { enterKey, formatShortcut, modKey } from "@multica/core/platform";
@@ -60,6 +61,11 @@ export function ChatInput({
   const editorRef = useRef<ContentEditorRef>(null);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
+  // Parley auto-speak preference lives in the chat store; the toggle button is
+  // here in the input bar, while the speak-on-new-reply effect lives in
+  // ChatWindow (where the reply stream is). Both read the same store.
+  const autoSpeak = useChatStore((s) => s.autoSpeak);
+  const toggleAutoSpeak = useChatStore((s) => s.toggleAutoSpeak);
   // Two keys with deliberately different concerns:
   //
   // `draftKey` — zustand storage key. Scopes the in-progress draft per
@@ -272,6 +278,11 @@ export function ChatInput({
               onSelect={(file) => editorRef.current?.uploadFile(file)}
             />
           )}
+          <AutoSpeakToggle
+            size="sm"
+            enabled={autoSpeak}
+            onToggle={toggleAutoSpeak}
+          />
           {!disabled && !noAgent && (
             <VoiceControls
               size="sm"
