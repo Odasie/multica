@@ -6,5 +6,7 @@
   "copy_code": "코드 복사",
   "plain_text": "일반 텍스트",
   "start_voice_input": "음성 입력 시작",
-  "stop_voice_input": "음성 입력 중지"
+  "stop_voice_input": "음성 입력 중지",
+  "start_auto_speak": "에이전트 답장 읽어주기",
+  "stop_auto_speak": "읽어주기 중지"
 }

@@ -25,6 +25,8 @@ declare global {
       plain_text: string;
       start_voice_input: string;
       stop_voice_input: string;
+      start_auto_speak: string;
+      stop_auto_speak: string;
     };
   }
 }
