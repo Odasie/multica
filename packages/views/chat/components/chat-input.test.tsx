@@ -5,6 +5,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
+import enUi from "../../locales/en/ui.json";
 
 function makeUpload(overrides: Partial<UploadResult> & { id: string; link: string; filename: string }): UploadResult {
   return {
@@ -30,7 +31,7 @@ function makeUpload(overrides: Partial<UploadResult> & { id: string; link: strin
   };
 }
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
+const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, ui: enUi } };
 
 // Track drop-zone callbacks so the test can simulate a real drop.
 const dropHandlers = vi.hoisted(() => ({
@@ -307,15 +308,13 @@ describe("ChatInput attachment wiring", () => {
 
   it("does not render the file upload button when onUploadFile is omitted", () => {
     renderInput({ onUploadFile: undefined });
-    // FileUploadButton renders an icon button labelled by its tooltip — when
-    // upload wiring is absent the chat input falls back to "submit + extras"
-    // only. Probe by counting buttons: with no upload, only the submit
-    // button is in the action row. (VoiceControls renders nothing here —
-    // jsdom has no Web Speech API, so it feature-detects out.)
-    const buttons = screen.getAllByRole("button");
-    // The agent picker may render zero buttons
-    // in this test (no leftAdornment passed). So a single button = submit.
-    expect(buttons.length).toBe(1);
+    // FileUploadButton is the only affordance gated on `onUploadFile`; with
+    // it omitted, the attach button must be absent. Probe for it specifically
+    // rather than counting buttons — the action row also carries the
+    // auto-speak toggle (Audio is available in jsdom) and the submit button.
+    expect(
+      screen.queryByRole("button", { name: enUi.attach_file }),
+    ).toBeNull();
   });
 });
 

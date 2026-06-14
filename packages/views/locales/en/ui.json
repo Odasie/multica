@@ -6,5 +6,7 @@
   "copy_code": "Copy code",
   "plain_text": "plain text",
   "start_voice_input": "Start voice input",
-  "stop_voice_input": "Stop voice input"
+  "stop_voice_input": "Stop voice input",
+  "start_auto_speak": "Read agent replies aloud",
+  "stop_auto_speak": "Stop reading replies aloud"
 }
