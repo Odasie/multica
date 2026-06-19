@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { resolveRemoteApiUrl } from "@/config/runtime-urls";
+
 // Parley TTS proxy — server-side ElevenLabs caller.
 //
 // The ElevenLabs key is a SERVER secret: it is read from `process.env` here
@@ -8,7 +10,9 @@ import { NextResponse, type NextRequest } from "next/server";
 // back. This sits at `/api/parley/tts`, which is served by Next's
 // file-system route *before* the `/api/:path*` → Go-backend rewrite
 // (that rewrite is `afterFiles`, so real route handlers win — see
-// apps/web/next.config.ts).
+// apps/web/next.config.ts). Because this handler wins over the rewrite the Go
+// auth layer never sees the request, so this route must gate itself — it
+// forward-authenticates to Go below before doing any paid upstream work.
 //
 // When the key is absent (local dev, no-key deploys) the route returns 503
 // so the client falls back to the browser SpeechSynthesis voice. That makes
@@ -26,12 +30,83 @@ const DEFAULT_MODEL_ID = "eleven_multilingual_v2";
 // Guardrail: agent replies are short, but cap the proxied text so a runaway
 // message can't run up the ElevenLabs bill or hang the request.
 const MAX_TEXT_LENGTH = 5000;
-// Pre-parse guard: reject an over-large body before buffering it into memory.
-// content-length is caller-supplied (can be absent or lie), so this is only an
-// early-out — MAX_TEXT_LENGTH below is the authoritative cap. UTF-8 text is up
-// to 4 bytes/char, so allow MAX_TEXT_LENGTH * 4 plus headroom for the JSON
-// envelope and a voiceId.
+// Pre-parse Content-Length cap. A 5000-char string is at most ~4 bytes/char in
+// UTF-8; add headroom for the JSON envelope and an optional `voiceId`. We reject
+// on Content-Length BEFORE `req.json()` so an oversized payload is never
+// buffered or parsed.
 const MAX_BODY_BYTES = MAX_TEXT_LENGTH * 4 + 1024;
+
+// Go's session-validation endpoint: returns 200 for an authenticated session
+// and 401 otherwise, reading the `multica_auth` HttpOnly cookie. Forward-auth
+// keeps Go the single source of truth for sessions — Next never needs the
+// session secret or DB access.
+const SESSION_VALIDATE_PATH = "/api/me";
+// Validation is a localhost round-trip; keep it short and fail closed.
+const SESSION_VALIDATE_TIMEOUT_MS = 3000;
+
+// Per-session in-memory token bucket. Single-VPS self-host makes in-memory
+// adequate; a horizontally-scaled deploy would need a shared store (e.g. Redis)
+// so the limit holds across instances.
+const RATE_LIMIT_CAPACITY = 20; // burst size = requests per window
+const RATE_LIMIT_WINDOW_MS = 60_000; // bucket refills fully once per minute
+const RATE_LIMIT_REFILL_PER_MS = RATE_LIMIT_CAPACITY / RATE_LIMIT_WINDOW_MS;
+
+interface Bucket {
+  tokens: number;
+  lastRefill: number;
+}
+const buckets = new Map<string, Bucket>();
+
+// Returns false when the caller has exhausted their tokens (→ 429).
+function allowRequest(sessionKey: string): boolean {
+  const now = Date.now();
+  const bucket = buckets.get(sessionKey) ?? {
+    tokens: RATE_LIMIT_CAPACITY,
+    lastRefill: now,
+  };
+  bucket.tokens = Math.min(
+    RATE_LIMIT_CAPACITY,
+    bucket.tokens + (now - bucket.lastRefill) * RATE_LIMIT_REFILL_PER_MS,
+  );
+  bucket.lastRefill = now;
+  buckets.set(sessionKey, bucket);
+  if (bucket.tokens < 1) return false;
+  bucket.tokens -= 1;
+  return true;
+}
+
+// Forward-authenticate to Go. Returns a stable per-session key on success, or
+// null when the session is invalid/unreachable (fail closed → 401).
+async function validateSession(cookie: string): Promise<string | null> {
+  const base = resolveRemoteApiUrl(process.env);
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    SESSION_VALIDATE_TIMEOUT_MS,
+  );
+  try {
+    const res = await fetch(`${base}${SESSION_VALIDATE_PATH}`, {
+      method: "GET",
+      headers: { cookie },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    // Prefer the user id as the rate-limit key; fall back to the cookie so a
+    // shape change in /api/me can never silently disable the limit.
+    try {
+      const me = (await res.json()) as { id?: unknown };
+      if (typeof me.id === "string" && me.id) return me.id;
+    } catch {
+      // 200 with an unparseable body — still authenticated; key on the cookie.
+    }
+    return cookie;
+  } catch {
+    // Timeout or network error reaching Go — never fall through to ElevenLabs.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface TtsRequestBody {
   text?: unknown;
@@ -55,6 +130,12 @@ function allowedVoiceIds(): Set<string> {
 }
 
 export async function POST(req: NextRequest) {
+  // Reject oversized payloads before parsing — cheap DoS / bill guard.
+  const contentLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "text_too_long" }, { status: 413 });
+  }
+
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     // Not an error the user needs to see — the client treats 503 as
@@ -65,11 +146,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Reject an obviously-oversized body before reading it. The post-parse
-  // MAX_TEXT_LENGTH check still applies (content-length can be missing or lie).
-  const contentLength = Number(req.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: "body_too_large" }, { status: 413 });
+  // Gate: forward-authenticate to Go before any paid upstream work.
+  const cookie = req.headers.get("cookie") ?? "";
+  const sessionKey = cookie ? await validateSession(cookie) : null;
+  if (!sessionKey) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Per-session rate limit — throttle before firing the ElevenLabs request.
+  if (!allowRequest(sessionKey)) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
   let body: TtsRequestBody;
