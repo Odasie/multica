@@ -113,6 +113,22 @@ interface TtsRequestBody {
   voiceId?: unknown;
 }
 
+// Voice IDs the proxy accepts on a per-request override. Anything outside this
+// set is rejected (400) so a caller can't select an arbitrary — possibly
+// premium — ElevenLabs voice by smuggling a voiceId in the body. The set is the
+// built-in default, the deploy's configured voice, and any extra IDs the deploy
+// opts into via ELEVENLABS_ALLOWED_VOICE_IDS (comma-separated).
+function allowedVoiceIds(): Set<string> {
+  const ids = new Set<string>([DEFAULT_VOICE_ID]);
+  const configured = process.env.ELEVENLABS_VOICE_ID?.trim();
+  if (configured) ids.add(configured);
+  for (const raw of (process.env.ELEVENLABS_ALLOWED_VOICE_IDS ?? "").split(",")) {
+    const id = raw.trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
 export async function POST(req: NextRequest) {
   // Reject oversized payloads before parsing — cheap DoS / bill guard.
   const contentLength = Number(req.headers.get("content-length"));
@@ -157,10 +173,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "text_too_long" }, { status: 413 });
   }
 
+  const requestedVoiceId =
+    typeof body.voiceId === "string" ? body.voiceId.trim() : "";
+  if (requestedVoiceId && !allowedVoiceIds().has(requestedVoiceId)) {
+    return NextResponse.json({ error: "voice_not_allowed" }, { status: 400 });
+  }
   const voiceId =
-    (typeof body.voiceId === "string" && body.voiceId.trim()) ||
-    process.env.ELEVENLABS_VOICE_ID ||
-    DEFAULT_VOICE_ID;
+    requestedVoiceId || process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
   const modelId = process.env.ELEVENLABS_MODEL_ID || DEFAULT_MODEL_ID;
 
   let upstream: Response;

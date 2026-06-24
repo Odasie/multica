@@ -69,6 +69,7 @@ describe("POST /api/parley/tts", () => {
     vi.unstubAllGlobals();
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.REMOTE_API_URL;
+    delete process.env.ELEVENLABS_ALLOWED_VOICE_IDS;
   });
 
   it("streams audio for an authenticated request", async () => {
@@ -78,6 +79,36 @@ describe("POST /api/parley/tts", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("audio/mpeg");
     expect(elevenLabsCalls(mock)).toHaveLength(1);
+  });
+
+  it("rejects a disallowed voiceId override with 400 and never calls ElevenLabs", async () => {
+    const mock = installFetchMock({ authed: true, userId: "user-voice-deny" });
+    const res = await POST(
+      makeRequest({
+        cookie: "multica_auth=valid",
+        body: JSON.stringify({ text: "hello", voiceId: "premium-voice" }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "voice_not_allowed" });
+    expect(elevenLabsCalls(mock)).toHaveLength(0);
+  });
+
+  it("accepts an allowlisted voiceId override via ELEVENLABS_ALLOWED_VOICE_IDS", async () => {
+    process.env.ELEVENLABS_ALLOWED_VOICE_IDS = "brand-voice, other-voice";
+    const mock = installFetchMock({ authed: true, userId: "user-voice-allow" });
+    const res = await POST(
+      makeRequest({
+        cookie: "multica_auth=valid",
+        body: JSON.stringify({ text: "hello", voiceId: "brand-voice" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const calls = elevenLabsCalls(mock);
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.[0])).toContain("/brand-voice");
   });
 
   it("returns 401 with no session cookie and never calls ElevenLabs", async () => {
